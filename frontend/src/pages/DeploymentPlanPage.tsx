@@ -7,7 +7,7 @@ import TerminalBlock from '@/components/TerminalBlock';
 import StatusBadge from '@/components/StatusBadge';
 import ProgressBar from '@/components/ProgressBar';
 import {
-  CheckCircle, XCircle, SkipForward, RotateCcw, Bookmark,
+  CheckCircle, XCircle, SkipForward, RotateCcw,
   ChevronDown, ChevronUp, AlertTriangle, ArrowRight, MapPin
 } from 'lucide-react';
 
