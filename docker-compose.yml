@@ -1,0 +1,40 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: deploypilot-db
+    environment:
+      POSTGRES_DB: deploypilot
+      POSTGRES_USER: deploypilot
+      POSTGRES_PASSWORD: localdev
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U deploypilot"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: deploypilot-backend
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      SPRING_PROFILES_ACTIVE: dev
+      DATABASE_URL: jdbc:postgresql://postgres:5432/deploypilot
+      DATABASE_USERNAME: deploypilot
+      DATABASE_PASSWORD: localdev
+      JWT_SECRET: local-development-jwt-secret-change-for-production
+      FRONTEND_URL: http://localhost:5173
+    ports:
+      - "8080:8080"
+
+volumes:
+  postgres-data:
