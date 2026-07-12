@@ -1,3 +1,4 @@
+import type { ReactElement } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { guideApi } from '@/lib/api';
@@ -23,7 +24,7 @@ export default function GuideDetailPage() {
   const renderContent = (content: string) => {
     if (!content) return null;
     const lines = content.split('\n');
-    const elements: JSX.Element[] = [];
+    const elements: ReactElement[] = [];
     let key = 0;
 
     for (let i = 0; i < lines.length; i++) {
@@ -40,7 +41,6 @@ export default function GuideDetailPage() {
           </div>
         );
       } else if (line.startsWith('```')) {
-        const lang = line.slice(3).trim();
         let code = '';
         i++;
         while (i < lines.length && !lines[i].startsWith('```')) {
