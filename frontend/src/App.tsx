@@ -10,6 +10,7 @@ import DashboardPage from '@/pages/DashboardPage';
 import ProjectsPage from '@/pages/ProjectsPage';
 import ProjectWizardPage from '@/pages/ProjectWizardPage';
 import DeploymentPlanPage from '@/pages/DeploymentPlanPage';
+import RepositoryAnalysisPage from '@/pages/RepositoryAnalysisPage';
 import GitCommandsPage from '@/pages/GitCommandsPage';
 import EnvVarsPage from '@/pages/EnvVarsPage';
 import GuidesPage from '@/pages/GuidesPage';
@@ -37,6 +38,7 @@ export default function App() {
           <Route path="/projects" element={<ProjectsPage />} />
           <Route path="/projects/new" element={<ProjectWizardPage />} />
           <Route path="/projects/:id/plan" element={<DeploymentPlanPage />} />
+          <Route path="/projects/:id/analysis" element={<RepositoryAnalysisPage />} />
           <Route path="/git-commands" element={<GitCommandsPage />} />
           <Route path="/env-vars" element={<EnvVarsPage />} />
           <Route path="/guides" element={<GuidesPage />} />

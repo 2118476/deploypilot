@@ -1,5 +1,5 @@
 import axios, { AxiosError } from 'axios';
-import type { ApiResponse, AuthResponse, User, Project, ProjectSummary, DeploymentPlan, DeploymentStep, GuideCategory, Guide, CommandSnippet, ProjectEnvVar, EnvVarDefinition, GlossaryTerm, DashboardData, LoginRequest, RegisterRequest, TechnologySelection, ErrorReportRequest } from '@/types';
+import type { ApiResponse, AuthResponse, User, Project, ProjectSummary, DeploymentPlan, DeploymentStep, GuideCategory, Guide, CommandSnippet, ProjectEnvVar, EnvVarDefinition, GlossaryTerm, DashboardData, LoginRequest, RegisterRequest, TechnologySelection, ErrorReportRequest, RepositoryAnalysis } from '@/types';
 
 const api = axios.create({
   baseURL: import.meta.env.VITE_API_BASE_URL || '',
@@ -78,6 +78,12 @@ export const glossaryApi = {
   list: () => wrap(api.get<ApiResponse<GlossaryTerm[]>>('/glossary')),
   search: (q: string) => wrap(api.get<ApiResponse<GlossaryTerm[]>>(`/glossary/search?q=${q}`)),
   get: (slug: string) => wrap(api.get<ApiResponse<GlossaryTerm>>(`/glossary/${slug}`)),
+};
+
+export const analysisApi = {
+  latest: (projectId: number) => wrap(api.get<ApiResponse<RepositoryAnalysis>>(`/projects/${projectId}/analysis`)),
+  run: (projectId: number, repository: string) =>
+    wrap(api.post<ApiResponse<RepositoryAnalysis>>(`/projects/${projectId}/analysis`, { repository })),
 };
 
 export const troubleshootApi = {

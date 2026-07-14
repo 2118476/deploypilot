@@ -2,6 +2,7 @@ package com.deploypilot.controller;
 
 import com.deploypilot.dto.*;
 import com.deploypilot.service.ErrorReportService;
+import jakarta.validation.Valid;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
@@ -16,7 +17,7 @@ public class ErrorReportController {
     public ErrorReportController(ErrorReportService errorReportService) { this.errorReportService = errorReportService; }
 
     @PostMapping
-    public ResponseEntity<ApiResponse<ErrorReportResponse>> submitError(@RequestBody ErrorReportRequest request) {
+    public ResponseEntity<ApiResponse<ErrorReportResponse>> submitError(@Valid @RequestBody ErrorReportRequest request) {
         return ResponseEntity.ok(errorReportService.submitError(request));
     }
 

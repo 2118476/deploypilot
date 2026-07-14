@@ -1,0 +1,5 @@
+services:
+  - type: web
+    name: sample-backend
+    env: docker
+    dockerfilePath: ./backend/Dockerfile

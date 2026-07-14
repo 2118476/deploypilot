@@ -1,6 +1,7 @@
 package com.deploypilot.exception;
 
 import com.deploypilot.dto.ApiResponse;
+import com.deploypilot.repoaccess.RepositoryAccessException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.AccessDeniedException;
@@ -39,6 +40,33 @@ public class GlobalExceptionHandler {
         String msg = e.getBindingResult().getFieldErrors().stream()
                 .map(FieldError::getDefaultMessage).collect(Collectors.joining(", "));
         return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(ApiResponse.error(msg));
+    }
+
+    @ExceptionHandler(IllegalArgumentException.class)
+    public ResponseEntity<ApiResponse<Void>> handleIllegalArgument(IllegalArgumentException e) {
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(ApiResponse.error(e.getMessage()));
+    }
+
+    @ExceptionHandler(RepositoryAccessException.NotFound.class)
+    public ResponseEntity<ApiResponse<Void>> handleRepoNotFound(RepositoryAccessException.NotFound e) {
+        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(ApiResponse.error(e.getMessage()));
+    }
+
+    @ExceptionHandler(RepositoryAccessException.AccessDenied.class)
+    public ResponseEntity<ApiResponse<Void>> handleRepoAccessDenied(RepositoryAccessException.AccessDenied e) {
+        return ResponseEntity.status(HttpStatus.FORBIDDEN).body(ApiResponse.error(e.getMessage()));
+    }
+
+    @ExceptionHandler(RepositoryAccessException.RateLimited.class)
+    public ResponseEntity<ApiResponse<Void>> handleRepoRateLimited(RepositoryAccessException.RateLimited e) {
+        return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS).body(ApiResponse.error(e.getMessage()));
+    }
+
+    // BadCredentials deliberately maps to 502, not 401: a 401 would make the
+    // frontend log the user out, but the problem is the server's GitHub token.
+    @ExceptionHandler(RepositoryAccessException.class)
+    public ResponseEntity<ApiResponse<Void>> handleRepoAccess(RepositoryAccessException e) {
+        return ResponseEntity.status(HttpStatus.BAD_GATEWAY).body(ApiResponse.error(e.getMessage()));
     }
 
     @ExceptionHandler(Exception.class)

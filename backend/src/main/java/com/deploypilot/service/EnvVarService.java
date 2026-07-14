@@ -4,8 +4,13 @@ import com.deploypilot.dto.*;
 import com.deploypilot.model.EnvVarDefinition;
 import com.deploypilot.model.ProjectEnvVar;
 import com.deploypilot.model.enums.EnvVarClassification;
+import com.deploypilot.exception.ResourceNotFoundException;
+import com.deploypilot.exception.UnauthorizedAccessException;
+import com.deploypilot.model.Project;
 import com.deploypilot.repository.EnvVarDefinitionRepository;
 import com.deploypilot.repository.ProjectEnvVarRepository;
+import com.deploypilot.repository.ProjectRepository;
+import com.deploypilot.util.CurrentUserUtil;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import java.util.List;
@@ -15,8 +20,19 @@ import java.util.stream.Collectors;
 public class EnvVarService {
     private final EnvVarDefinitionRepository defRepo;
     private final ProjectEnvVarRepository varRepo;
-    public EnvVarService(EnvVarDefinitionRepository defRepo, ProjectEnvVarRepository varRepo) {
-        this.defRepo = defRepo; this.varRepo = varRepo;
+    private final ProjectRepository projectRepo;
+    public EnvVarService(EnvVarDefinitionRepository defRepo, ProjectEnvVarRepository varRepo,
+                         ProjectRepository projectRepo) {
+        this.defRepo = defRepo; this.varRepo = varRepo; this.projectRepo = projectRepo;
+    }
+
+    private void assertProjectOwnership(Long projectId) {
+        Long userId = CurrentUserUtil.getCurrentUserId();
+        Project project = projectRepo.findById(projectId)
+            .orElseThrow(() -> new ResourceNotFoundException("Project not found"));
+        if (!project.getUserId().equals(userId)) {
+            throw new UnauthorizedAccessException("Not your project");
+        }
     }
 
     @Transactional(readOnly = true)
@@ -26,11 +42,13 @@ public class EnvVarService {
 
     @Transactional(readOnly = true)
     public List<EnvVarResponse> getProjectEnvVars(Long projectId) {
+        assertProjectOwnership(projectId);
         return varRepo.findByProjectId(projectId).stream().map(this::toVarResponse).collect(Collectors.toList());
     }
 
     @Transactional
     public EnvVarResponse createProjectEnvVar(Long projectId, EnvVarCreateRequest req) {
+        assertProjectOwnership(projectId);
         ProjectEnvVar v = new ProjectEnvVar();
         v.setProjectId(projectId);
         v.setVariableName(req.getVariableName());
@@ -45,14 +63,19 @@ public class EnvVarService {
 
     @Transactional
     public EnvVarResponse updateEnvVar(Long varId, EnvVarUpdateRequest req) {
-        ProjectEnvVar v = varRepo.findById(varId).orElseThrow(() -> new com.deploypilot.exception.ResourceNotFoundException("Variable not found"));
+        ProjectEnvVar v = varRepo.findById(varId).orElseThrow(() -> new ResourceNotFoundException("Variable not found"));
+        assertProjectOwnership(v.getProjectId());
         v.setConfigured(req.isConfigured());
         v.setNotes(req.getNotes());
         return toVarResponse(varRepo.save(v));
     }
 
     @Transactional
-    public void deleteEnvVar(Long varId) { varRepo.deleteById(varId); }
+    public void deleteEnvVar(Long varId) {
+        ProjectEnvVar v = varRepo.findById(varId).orElseThrow(() -> new ResourceNotFoundException("Variable not found"));
+        assertProjectOwnership(v.getProjectId());
+        varRepo.delete(v);
+    }
 
     private EnvVarDefinitionResponse toDefResponse(EnvVarDefinition d) {
         EnvVarDefinitionResponse r = new EnvVarDefinitionResponse();
