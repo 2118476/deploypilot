@@ -58,14 +58,16 @@ public class SecurityConfig {
             .exceptionHandling(e -> e.authenticationEntryPoint(entryPoint))
             .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
             .authorizeHttpRequests(auth -> auth
-                .requestMatchers("/api/auth/**").permitAll()
-                .requestMatchers("/api/health").permitAll()
-                .requestMatchers("/api/actuator/health").permitAll()
-                .requestMatchers("/api/public/**").permitAll()
-                .requestMatchers("/api/glossary/**").permitAll()
+                // The servlet context path (/api) is stripped before security
+                // matchers run, so patterns here must not include it.
+                .requestMatchers("/auth/**").permitAll()
+                .requestMatchers("/health").permitAll()
+                .requestMatchers("/actuator/health").permitAll()
+                .requestMatchers("/public/**").permitAll()
+                .requestMatchers("/glossary/**").permitAll()
                 .requestMatchers("/swagger-ui/**", "/v3/api-docs/**").permitAll()
-                .requestMatchers(HttpMethod.GET, "/api/guides/**").permitAll()
-                .requestMatchers(HttpMethod.GET, "/api/commands/**").permitAll()
+                .requestMatchers(HttpMethod.GET, "/guides/**").permitAll()
+                .requestMatchers(HttpMethod.GET, "/commands/**").permitAll()
                 .anyRequest().authenticated()
             )
             .addFilterBefore(jwtFilter, UsernamePasswordAuthenticationFilter.class);
