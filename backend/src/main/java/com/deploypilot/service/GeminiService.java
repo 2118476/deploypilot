@@ -37,12 +37,12 @@ public class GeminiService {
 
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.APPLICATION_JSON);
-
-        String url = config.getUrl() + "?key=" + config.getKey();
+        // Send the key as a header so it never appears in URLs or error messages
+        headers.set("x-goog-api-key", config.getKey());
 
         try {
             HttpEntity<Map<String, Object>> request = new HttpEntity<>(body, headers);
-            ResponseEntity<Map> response = restTemplate.postForEntity(url, request, Map.class);
+            ResponseEntity<Map> response = restTemplate.postForEntity(config.getUrl(), request, Map.class);
 
             if (response.getBody() != null) {
                 List<Map<String, Object>> candidates = (List<Map<String, Object>>) response.getBody().get("candidates");

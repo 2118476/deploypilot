@@ -8,7 +8,7 @@ public class GeminiConfig {
     @Value("${gemini.api.key:}")
     private String key;
 
-    @Value("${gemini.api.url:https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent}")
+    @Value("${gemini.api.url:https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent}")
     private String url;
 
     public String getKey() { return key; }
