@@ -5,8 +5,6 @@ import jakarta.persistence.*;
 import org.hibernate.annotations.CreationTimestamp;
 import org.hibernate.annotations.UpdateTimestamp;
 import java.time.Instant;
-import java.util.ArrayList;
-import java.util.List;
 
 @Entity
 @Table(name = "guides")
@@ -21,7 +19,6 @@ public class Guide {
     @Column(name = "sort_order") private Integer sortOrder;
     @CreationTimestamp @Column(name = "created_at", nullable = false, updatable = false) private Instant createdAt;
     @UpdateTimestamp @Column(name = "updated_at", nullable = false) private Instant updatedAt;
-    @OneToMany(mappedBy = "guideId", cascade = CascadeType.ALL, orphanRemoval = true, fetch = FetchType.LAZY) private List<GuideSection> sections = new ArrayList<>();
     public Guide() {}
     public Long getId() { return id; } public void setId(Long id) { this.id = id; }
     public Long getCategoryId() { return categoryId; } public void setCategoryId(Long categoryId) { this.categoryId = categoryId; }
@@ -32,5 +29,4 @@ public class Guide {
     public GuideDifficulty getDifficulty() { return difficulty; } public void setDifficulty(GuideDifficulty difficulty) { this.difficulty = difficulty; }
     public Integer getSortOrder() { return sortOrder; } public void setSortOrder(Integer sortOrder) { this.sortOrder = sortOrder; }
     public Instant getCreatedAt() { return createdAt; } public Instant getUpdatedAt() { return updatedAt; }
-    public List<GuideSection> getSections() { return sections; }
 }

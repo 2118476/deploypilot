@@ -6,8 +6,6 @@ import org.hibernate.annotations.CreationTimestamp;
 import org.hibernate.annotations.UpdateTimestamp;
 
 import java.time.Instant;
-import java.util.ArrayList;
-import java.util.List;
 
 @Entity
 @Table(name = "projects", indexes = {
@@ -45,21 +43,6 @@ public class Project {
     @Column(name = "updated_at", nullable = false)
     private Instant updatedAt;
 
-    @OneToMany(mappedBy = "project", cascade = CascadeType.ALL, orphanRemoval = true, fetch = FetchType.LAZY)
-    private List<ProjectTechnology> technologies = new ArrayList<>();
-
-    @OneToMany(mappedBy = "project", cascade = CascadeType.ALL, orphanRemoval = true, fetch = FetchType.LAZY)
-    private List<ProjectService> services = new ArrayList<>();
-
-    @OneToMany(mappedBy = "project", cascade = CascadeType.ALL, orphanRemoval = true, fetch = FetchType.LAZY)
-    private List<ProjectEnvVar> environmentVariables = new ArrayList<>();
-
-    @OneToMany(mappedBy = "project", cascade = CascadeType.ALL, orphanRemoval = true, fetch = FetchType.LAZY)
-    private List<DeploymentRecord> deploymentRecords = new ArrayList<>();
-
-    @OneToOne(mappedBy = "project", cascade = CascadeType.ALL, orphanRemoval = true, fetch = FetchType.LAZY)
-    private DeploymentPlan deploymentPlan;
-
     public Project() {}
 
     public Long getId() { return id; }
@@ -78,10 +61,4 @@ public class Project {
     public void setUserId(Long userId) { this.userId = userId; }
     public Instant getCreatedAt() { return createdAt; }
     public Instant getUpdatedAt() { return updatedAt; }
-    public List<ProjectTechnology> getTechnologies() { return technologies; }
-    public List<ProjectService> getServices() { return services; }
-    public List<ProjectEnvVar> getEnvironmentVariables() { return environmentVariables; }
-    public List<DeploymentRecord> getDeploymentRecords() { return deploymentRecords; }
-    public DeploymentPlan getDeploymentPlan() { return deploymentPlan; }
-    public void setDeploymentPlan(DeploymentPlan deploymentPlan) { this.deploymentPlan = deploymentPlan; }
 }

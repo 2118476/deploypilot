@@ -6,8 +6,6 @@ import org.hibernate.annotations.CreationTimestamp;
 import org.hibernate.annotations.UpdateTimestamp;
 
 import java.time.Instant;
-import java.util.ArrayList;
-import java.util.List;
 
 @Entity
 @Table(name = "users", indexes = {
@@ -40,9 +38,6 @@ public class User {
     @Column(name = "updated_at", nullable = false)
     private Instant updatedAt;
 
-    @OneToMany(mappedBy = "user", cascade = CascadeType.ALL, orphanRemoval = true, fetch = FetchType.LAZY)
-    private List<Project> projects = new ArrayList<>();
-
     public User() {}
 
     public Long getId() { return id; }
@@ -57,6 +52,4 @@ public class User {
     public void setRole(UserRole role) { this.role = role; }
     public Instant getCreatedAt() { return createdAt; }
     public Instant getUpdatedAt() { return updatedAt; }
-    public List<Project> getProjects() { return projects; }
-    public void setProjects(List<Project> projects) { this.projects = projects; }
 }
