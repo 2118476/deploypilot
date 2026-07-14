@@ -198,3 +198,41 @@ export interface TechnologySelection {
   backendHost: string;
   additionalServices: string[];
 }
+
+export type AnalysisConfidence = 'HIGH' | 'MEDIUM' | 'LOW';
+
+export interface StackDetection {
+  category: string;
+  name: string;
+  path: string;
+  confidence: AnalysisConfidence;
+  evidence: string[];
+}
+
+export interface EnvVarFinding {
+  name: string;
+  classification: 'SECRET_OR_SENSITIVE' | 'PUBLIC_CONFIGURATION' | 'CONFIGURATION';
+  source: string;
+}
+
+export interface StackDetectionResult {
+  repository: string;
+  structure: 'MONOREPO' | 'SINGLE_APPLICATION' | 'UNKNOWN';
+  detections: StackDetection[];
+  environmentVariables: EnvVarFinding[];
+  buildCommands: string[];
+  startCommands: string[];
+  warnings: string[];
+  analyzedFiles: string[];
+  skippedFiles: string[];
+}
+
+export interface RepositoryAnalysis {
+  id: number;
+  projectId: number;
+  repository: string;
+  status: 'RUNNING' | 'COMPLETED' | 'FAILED';
+  errorMessage?: string;
+  result?: StackDetectionResult;
+  createdAt: string;
+}

@@ -16,16 +16,23 @@ jobs:
         with:
           java-version: '17'
           distribution: 'temurin'
-      - name: Build and test backend
+          cache: 'maven'
+          cache-dependency-path: backend/pom.xml
+      # The Maven wrapper is intentionally not committed (see .gitignore),
+      # so CI uses the runner's Maven directly.
+      - name: Run backend tests
         working-directory: ./backend
-        run: |
-          ./mvnw clean test package -DskipTests=false
+        run: mvn -B test
+      - name: Package backend (tests already ran)
+        working-directory: ./backend
+        run: mvn -B package -DskipTests
       - name: Upload test results
         uses: actions/upload-artifact@v4
         if: always()
         with:
           name: backend-test-results
           path: backend/target/surefire-reports/
+          if-no-files-found: ignore
 
   frontend:
     runs-on: ubuntu-latest
@@ -42,7 +49,7 @@ jobs:
         run: npm ci
       - name: Lint
         working-directory: ./frontend
-        run: npm run lint || true
+        run: npm run lint
       - name: Build
         working-directory: ./frontend
         run: npm run build

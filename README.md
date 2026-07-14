@@ -2,10 +2,11 @@
 
 **Build it. Secure it. Deploy it. Know what to do next.**
 
-DeployPilot is your interactive deployment assistant. It helps developers confidently deploy their applications by providing personalized deployment plans, step-by-step guides, a Git command reference, environment variable management, and AI-powered troubleshooting.
+DeployPilot is your interactive deployment assistant. It helps developers confidently deploy their applications by providing personalized deployment plans, step-by-step guides, a Git command reference, environment variable management, AI-powered troubleshooting — and now read-only GitHub repository analysis.
 
 ## Features
 
+- **Repository Analysis (new)** - Point DeployPilot at a GitHub repository and it detects the technology stack from configuration files — read-only, with evidence and confidence for every finding
 - **Personalized Deployment Plans** - Answer a few questions about your tech stack and receive an ordered, step-by-step deployment checklist
 - **Project Wizard** - 8-step guided wizard covering frontend, backend, database, hosting, and services
 - **Git Command Reference** - 33+ Git commands with explanations, warnings for destructive operations, and beginner/advanced modes
@@ -17,6 +18,46 @@ DeployPilot is your interactive deployment assistant. It helps developers confid
 - **Dark/Light Mode** - Fully responsive UI with theme support
 - **PWA Support** - Install as a web app on mobile and desktop
 
+## Repository Analysis
+
+### What it does
+
+Open a project, enter a GitHub repository (`owner/name` or URL), and DeployPilot will:
+
+- List the repository's files through the GitHub REST API (read-only)
+- Download only recognized **configuration files** (`package.json`, `pom.xml`, `Dockerfile`, `netlify.toml`, `render.yaml`, `.env.example`, and similar)
+- Detect, deterministically and without AI: project structure (monorepo vs single app), frontend/backend frameworks, languages, build tools, package managers, databases, container usage, hosting configuration, likely external services, and build/start commands
+- Extract **environment-variable names** from `.env.example`-style templates and classify them (secret/sensitive, public, configuration) — names, classification and source file only
+- Attach **evidence** (which file proved what) and a **confidence level** to every detection, plus warnings for anything skipped or unparseable
+
+### What it does not do yet
+
+- It does **not** modify your repository in any way (no writes, commits, branches or pull requests)
+- It does **not** deploy anything or call the Netlify/Render APIs
+- It does **not** read real `.env` files or return secret values
+- It does **not** send your repository content to AI
+
+### GitHub authentication setup
+
+| Mode | Setup | Capability |
+|---|---|---|
+| No token (default) | none | Public repositories only; GitHub's 60 requests/hour unauthenticated limit |
+| Fine-grained PAT | Set `GITHUB_API_TOKEN` on the backend | Private repositories the token can read; 5,000 requests/hour |
+| Fixture mode | Set `REPO_ACCESS_MODE=fixture` | Serves the bundled sample repository `demo/sample-monorepo` — for development and tests, no network |
+
+To analyse private repositories, create a **fine-grained personal access token** (GitHub → Settings → Developer settings → Fine-grained tokens) with:
+
+- Repository access: only the repositories you want to analyse
+- Permissions: **Contents: Read-only** and **Metadata: Read-only** — nothing else
+
+Set it as `GITHUB_API_TOKEN` on the backend (e.g. in Render's environment settings). The token is read from the environment only — it is never stored in the database and never sent to the frontend.
+
+**Roadmap: GitHub App.** The provider abstraction (`RepositoryFileReader` / `GitHubRepositoryClient`) is designed so a GitHub App installation (per-user OAuth, short-lived installation tokens) can replace the server-wide token. That requires registering a GitHub App (name, homepage, callback URL, private key) on a real GitHub account, which is external configuration outside this codebase.
+
+### Safety limits
+
+Analysis enforces hard limits: max 20,000 files listed, max 30 configuration files downloaded, 200 KB per file, 2 MB total, 60-second budget per run, and request timeouts on every GitHub call. Dependency folders (`node_modules`, `target`, `vendor`, `dist`, …), binaries and real `.env` files are never downloaded. Analysis records are private to the owning user and project.
+
 ## Architecture
 
 ```
@@ -26,7 +67,8 @@ React Frontend (Netlify)
                         |
                         |-- Flyway Migrations
                         |-- Supabase PostgreSQL
-                        |-- Gemini API (for AI troubleshooting)
+                        |-- Gemini API (AI troubleshooting only)
+                        |-- GitHub REST API (read-only repository analysis)
 ```
 
 ## Technology Stack
@@ -77,7 +119,7 @@ docker-compose up -d postgres
 3. Start the backend:
 ```bash
 cd backend
-./mvnw spring-boot:run
+./mvnw spring-boot:run   # or: mvn spring-boot:run
 ```
 The backend will be available at `http://localhost:8080/api`
 
@@ -89,45 +131,66 @@ npm run dev
 ```
 The frontend will be available at `http://localhost:5173`
 
+Tip: to try repository analysis without any GitHub setup, start the backend with `REPO_ACCESS_MODE=fixture` and analyse the repository `demo/sample-monorepo`.
+
 ### Environment Variables
 
-Copy `.env.example` to `.env` and fill in the values:
+**Frontend** (`.env.local` in `frontend/`, or Netlify environment):
 
-**Frontend** (`.env.local` in `frontend/`):
-```env
-VITE_API_BASE_URL=http://localhost:8080/api
-VITE_APP_NAME=DeployPilot
+| Name | Required | Purpose |
+|---|---|---|
+| `VITE_API_BASE_URL` | yes | Backend base URL including `/api`, e.g. `https://your-backend.onrender.com/api` |
+| `VITE_APP_NAME` | no | Display name |
+
+**Backend** (environment variables; see `.env.example`):
+
+| Name | Required | Purpose |
+|---|---|---|
+| `SPRING_PROFILES_ACTIVE` | yes | `dev` locally, `prod` in production |
+| `DATABASE_URL` | yes | JDBC URL, e.g. `jdbc:postgresql://host:5432/db` |
+| `DATABASE_USERNAME` / `DATABASE_PASSWORD` | yes | Database credentials |
+| `JWT_SECRET` | yes in prod | Signing secret, minimum 32 characters. **Production refuses to start if it is missing, too short, or left at the dev default.** |
+| `FRONTEND_URL` | yes in prod | Allowed CORS origin(s), comma-separated |
+| `GEMINI_API_KEY` | no | Enables AI troubleshooting |
+| `GITHUB_API_TOKEN` | no | Fine-grained read-only token for private-repository analysis and higher rate limits |
+| `REPO_ACCESS_MODE` | no | `github` (default) or `fixture` for the bundled sample repository |
+
+## Testing
+
+Backend (unit + integration tests; uses in-memory H2 and the fixture repository — no network or secrets needed):
+```bash
+cd backend
+mvn test
 ```
 
-**Backend** (environment variables or `.env`):
-```env
-SPRING_PROFILES_ACTIVE=dev
-DATABASE_URL=jdbc:postgresql://localhost:5432/deploypilot
-DATABASE_USERNAME=deploypilot
-DATABASE_PASSWORD=localdev
-JWT_SECRET=your-local-jwt-secret
+Frontend build and lint:
+```bash
+cd frontend
+npm ci
+npm run lint
+npm run build
 ```
+
+CI runs all of the above on every push and pull request to `main` (`.github/workflows/ci.yml`). CI requires no production secrets.
 
 ## Deployment
 
 ### 1. Create Supabase Database
 - Create a project at [supabase.com](https://supabase.com)
-- Save the connection details (host, database, user, password)
+- Use the **Session pooler** connection (IPv4) for Render; convert to JDBC form `jdbc:postgresql://host:5432/postgres`
 
 ### 2. Deploy Backend to Render
-- Create a Web Service at [render.com](https://render.com)
-- Connect your GitHub repository
-- Set environment variables from `.env.example`
+- Create a Web Service at [render.com](https://render.com) (Docker, `backend/Dockerfile`)
+- Set the environment variables listed above
 
 ### 3. Deploy Frontend to Netlify
 - Create a site at [netlify.com](https://netlify.com)
-- Connect your GitHub repository
-- Configure build settings (base: `frontend`, build: `npm ci && npm run build`, publish: `frontend/dist`)
-- Add `VITE_API_BASE_URL` pointing to your Render backend
+- `netlify.toml` configures the build (base `frontend`, publish `dist`)
+- Add `VITE_API_BASE_URL` pointing to your Render backend (including `/api`)
 
 ### 4. Configure CORS
-- Update `FRONTEND_URL` on Render to match your Netlify URL
-- The backend will automatically allow requests from that origin
+- Set `FRONTEND_URL` on Render to your Netlify URL
+- The backend allows requests only from the configured origin(s)
 
 ## API Documentation
 
@@ -138,11 +201,25 @@ Once the backend is running, API documentation is available at:
 ## Security
 
 - JWT authentication with BCrypt password hashing
-- Automatic secret redaction before sending to AI
-- No secrets stored in the database (only metadata)
-- CORS configured per-environment
-- Input validation on all endpoints
+- **Fail-fast production secrets**: with the `prod` profile, startup aborts when `JWT_SECRET` is absent, shorter than 32 characters, or still the development default
+- Automatic secret redaction before error text is sent to AI
+- Repository analysis returns environment-variable **names only** — never values; real `.env` files are never read
+- No GitHub tokens in the database — credentials come from the environment only
+- Per-user ownership enforced on projects, deployment plans, env-var records and analysis results
+- CORS restricted to configured origins
+- Input validation and size limits on all write endpoints
 - No stack traces exposed in production
+
+### Known limitation: JWT in localStorage
+
+The frontend stores the JWT in `localStorage`. This is simple and works across tabs, but any successful XSS attack could read the token. Mitigations in place: React's default output escaping, no `dangerouslySetInnerHTML`, short token lifetime (24 h). A move to `HttpOnly` cookies with CSRF protection is a candidate for a later phase; it was deliberately not rushed into this one to avoid a broad auth rewrite.
+
+## Roadmap
+
+1. **Now — read-only repository analysis**: detect the stack, surface evidence, prepare env-var checklists
+2. **Next — deployment blueprint**: turn analysis results into a concrete, platform-specific deployment plan automatically
+3. **Then — deployment verification**: check DNS, health endpoints, CORS and env-var completeness against the blueprint
+4. **Later — assisted automation**: after explicit user confirmation, automate deployment steps through GitHub, Netlify and Render APIs (never without consent)
 
 ## License
 

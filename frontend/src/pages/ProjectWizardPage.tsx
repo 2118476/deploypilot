@@ -5,7 +5,8 @@ import { projectApi } from '@/lib/api';
 import {
   ChevronRight, ChevronLeft, Check, Rocket, Code2, Database,
   Globe, Server, Sparkles, Bell, Lock, Mail, Box, Github,
-  Container, Palette, FileCode, Layers, Braces, Triangle
+  Container, Palette, FileCode, Layers, Braces, Triangle,
+  Smartphone, Flame, Zap, Bot
 } from 'lucide-react';
 
 const STEPS = [
@@ -303,9 +304,3 @@ export default function ProjectWizardPage() {
     </div>
   );
 }
-
-// Icon imports needed for wizard
-function Smartphone(props: { className?: string }) { return <Box {...props} />; }
-function Flame(props: { className?: string }) { return <Sparkles {...props} />; }
-function Zap(props: { className?: string }) { return <Sparkles {...props} />; }
-function Bot(props: { className?: string }) { return <Sparkles {...props} />; }
