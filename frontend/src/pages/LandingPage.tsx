@@ -1,7 +1,7 @@
 import { Link } from 'react-router-dom';
 import {
-  Rocket, Shield, Terminal, BookOpen, Wrench, Globe, ArrowRight,
-  Zap, Lock, BookMarked, Bot
+  Rocket, Shield, Terminal, BookOpen, ArrowRight,
+  Zap, Lock, Bot
 } from 'lucide-react';
 
 export default function LandingPage() {

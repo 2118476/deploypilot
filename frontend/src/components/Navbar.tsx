@@ -3,7 +3,7 @@ import { Link, useLocation } from 'react-router-dom';
 import { useAuth } from '@/hooks/useAuth';
 import { useTheme } from '@/hooks/useTheme';
 import {
-  Rocket, Sun, Moon, Monitor, Menu, X, LogOut, User,
+  Rocket, Sun, Moon, Monitor, Menu, X, LogOut,
   LayoutDashboard, FolderGit2, Terminal, BookOpen, Wrench, ShieldCheck
 } from 'lucide-react';
 

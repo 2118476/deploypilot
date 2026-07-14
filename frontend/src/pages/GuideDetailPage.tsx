@@ -1,3 +1,4 @@
+import type { JSX } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { guideApi } from '@/lib/api';
@@ -40,7 +41,6 @@ export default function GuideDetailPage() {
           </div>
         );
       } else if (line.startsWith('```')) {
-        const lang = line.slice(3).trim();
         let code = '';
         i++;
         while (i < lines.length && !lines[i].startsWith('```')) {
