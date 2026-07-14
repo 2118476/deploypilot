@@ -32,7 +32,10 @@ export default function Footer() {
           </div>
         </div>
         <div className="mt-8 pt-4 border-t border-slate-200 dark:border-slate-700 text-center text-xs text-slate-400">
-          DeployPilot 2025. Built to help developers deploy with confidence.
+          <p>DeployPilot 2025. Built to help developers deploy with confidence.</p>
+          <p className="mt-1 font-mono" title={`Built ${__BUILD_TIME__}`}>
+            build {__APP_COMMIT__}
+          </p>
         </div>
       </div>
     </footer>
