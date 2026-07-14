@@ -81,7 +81,9 @@ public class SecurityConfig {
     @Bean
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration config = new CorsConfiguration();
-        config.setAllowedOrigins(Arrays.stream(allowedOrigins.split(","))
+        // Patterns behave like exact origins but also allow wildcard entries,
+        // e.g. https://*--deploypilot.netlify.app for Netlify deploy previews.
+        config.setAllowedOriginPatterns(Arrays.stream(allowedOrigins.split(","))
             .map(String::trim).filter(s -> !s.isEmpty()).toList());
         config.setAllowedMethods(Arrays.asList("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
         config.setAllowedHeaders(Arrays.asList("Authorization", "Content-Type", "X-Requested-With"));
