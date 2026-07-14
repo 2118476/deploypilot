@@ -10,6 +10,7 @@ import java.time.Instant;
 public class Bookmark {
     @Id @GeneratedValue(strategy = GenerationType.IDENTITY) private Long id;
     private Long userId;
+    @Enumerated(EnumType.STRING) @Column(name = "item_type", nullable = false, length = 30)
     private BookmarkItemType itemType;
     private Long itemId;
     @Column(length = 255)
