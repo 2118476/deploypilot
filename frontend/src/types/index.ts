@@ -236,3 +236,115 @@ export interface RepositoryAnalysis {
   result?: StackDetectionResult;
   createdAt: string;
 }
+
+export interface PlatformOption {
+  platform: string;
+  reason: string;
+  evidence: string[];
+  confidence: AnalysisConfidence;
+  requiresConfirmation: boolean;
+  freeTierNote?: string;
+  coldStartNote?: string;
+  pricingNote?: string;
+}
+
+export interface BlueprintComponent {
+  id: string;
+  type: 'FRONTEND' | 'BACKEND' | 'DATABASE' | 'EXTERNAL_SERVICE';
+  name: string;
+  path?: string;
+  runtime?: string;
+  buildTool?: string;
+  recommendedPlatform: PlatformOption;
+  alternatives: PlatformOption[];
+  selectedPlatform: string;
+  buildCommand?: string;
+  startCommand?: string;
+  rootDirectory?: string;
+  publishDirectory?: string;
+  healthCheckPath?: string;
+  notes: string[];
+}
+
+export interface BlueprintRelationship {
+  fromComponent: string;
+  toComponent: string;
+  description: string;
+  viaVariable?: string;
+}
+
+export interface BlueprintEnvVar {
+  name: string;
+  componentId?: string;
+  targetPlatform?: string;
+  classification: 'SECRET_OR_SENSITIVE' | 'PUBLIC_CONFIGURATION' | 'CONFIGURATION';
+  required?: boolean | null;
+  valueSource: string;
+  expectedFormat?: string;
+  generatable: boolean;
+  dependsOnOutput?: string;
+  sourceEvidence?: string;
+}
+
+export interface BlueprintFinding {
+  severity: 'BLOCKER' | 'WARNING' | 'INFORMATIONAL';
+  title: string;
+  detail: string;
+  evidence?: string;
+  affectedFile?: string;
+  proposedFix?: string;
+  requiresConfirmation: boolean;
+}
+
+export interface BlueprintStep {
+  index: number;
+  title: string;
+  what: string;
+  where: string;
+  inputs: string[];
+  produces?: string;
+  unlocksVariables: string[];
+  expectedResult: string;
+  blockedBy: number[];
+}
+
+export interface BlueprintFilePreview {
+  path: string;
+  purpose: string;
+  exists?: boolean | null;
+  currentContent?: string;
+  suggestedContent: string;
+  diff?: string;
+  reason: string;
+}
+
+export interface BlueprintResult {
+  repository: string;
+  structure: string;
+  rulesVersion: string;
+  components: BlueprintComponent[];
+  relationships: BlueprintRelationship[];
+  environmentVariables: BlueprintEnvVar[];
+  findings: BlueprintFinding[];
+  steps: BlueprintStep[];
+  filePreviews: BlueprintFilePreview[];
+}
+
+export interface BlueprintResponse {
+  id: number;
+  projectId: number;
+  analysisId: number;
+  rulesVersion: string;
+  stale: boolean;
+  overrides: Record<string, string>;
+  result?: BlueprintResult;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ImportRepositoryResponse {
+  projectId: number;
+  projectName: string;
+  analysis: RepositoryAnalysis;
+  blueprint: BlueprintResponse;
+}
