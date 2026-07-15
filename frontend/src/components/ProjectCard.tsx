@@ -2,7 +2,7 @@ import { Link } from 'react-router-dom';
 import type { ProjectSummary } from '@/types';
 import StatusBadge from './StatusBadge';
 import ProgressBar from './ProgressBar';
-import { ChevronRight, FolderGit2, ScanSearch } from 'lucide-react';
+import { ChevronRight, FolderGit2, ScanSearch, DraftingCompass } from 'lucide-react';
 
 interface Props {
   project: ProjectSummary;
@@ -41,11 +41,16 @@ export default function ProjectCard({ project }: Props) {
         )}
       </Link>
 
-      <div className="mt-4 pt-3 border-t border-slate-100 dark:border-slate-700">
+      <div className="mt-4 pt-3 border-t border-slate-100 dark:border-slate-700 flex flex-wrap gap-x-4 gap-y-1.5">
         <Link to={`/projects/${project.id}/analysis`}
           className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-500 hover:text-primary-600 transition-colors">
           <ScanSearch className="w-3.5 h-3.5" />
           Repository analysis
+        </Link>
+        <Link to={`/projects/${project.id}/blueprint`}
+          className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-500 hover:text-primary-600 transition-colors">
+          <DraftingCompass className="w-3.5 h-3.5" />
+          Deployment blueprint
         </Link>
       </div>
     </div>

@@ -112,6 +112,15 @@ public class RepositoryAnalysisService {
         return toResponse(analysisRepository.save(analysis));
     }
 
+    /**
+     * Runs detection without persisting anything — used by the import flow to
+     * let the user review the detected stack before a project is created.
+     */
+    public StackDetectionResult detectOnly(String repositoryInput) {
+        RepositoryRef ref = RepositoryRef.parse(repositoryInput);
+        return runDetection(ref);
+    }
+
     @Transactional(readOnly = true)
     public RepositoryAnalysisResponse getLatest(Long projectId) {
         requireOwnedProject(projectId);

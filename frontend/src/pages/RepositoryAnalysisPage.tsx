@@ -1,13 +1,13 @@
 import { useState } from 'react';
-import { useParams, Link } from 'react-router-dom';
+import { useParams, Link, useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { AxiosError } from 'axios';
-import { analysisApi, projectApi } from '@/lib/api';
+import { analysisApi, blueprintApi, projectApi } from '@/lib/api';
 import type { ApiResponse, StackDetection, StackDetectionResult } from '@/types';
 import TerminalBlock from '@/components/TerminalBlock';
 import {
   Search, ShieldCheck, Github, RefreshCw, AlertTriangle, FileCode,
-  CheckCircle2, ChevronDown, ChevronUp, ArrowLeft, Loader2
+  CheckCircle2, ChevronDown, ChevronUp, ArrowLeft, Loader2, DraftingCompass
 } from 'lucide-react';
 
 const CATEGORY_LABELS: Record<string, string> = {
@@ -47,8 +47,14 @@ export default function RepositoryAnalysisPage() {
   const { id } = useParams<{ id: string }>();
   const projectId = Number(id);
   const qc = useQueryClient();
+  const nav = useNavigate();
   const [repository, setRepository] = useState('');
   const [showFiles, setShowFiles] = useState(false);
+
+  const blueprintMut = useMutation({
+    mutationFn: () => blueprintApi.generate(projectId),
+    onSuccess: () => nav(`/projects/${projectId}/blueprint`),
+  });
 
   const { data: project } = useQuery({
     queryKey: ['project', projectId],
@@ -159,6 +165,23 @@ export default function RepositoryAnalysisPage() {
       {!isLoading && !analysis && !runMut.isPending && (
         <div className="card p-8 text-center text-sm text-slate-500">
           No analysis yet. Enter a repository above to detect its technology stack.
+        </div>
+      )}
+
+      {/* Blueprint action after a successful analysis */}
+      {analysis?.status === 'COMPLETED' && !runMut.isPending && (
+        <div className="card p-4 mb-6 flex flex-wrap items-center justify-between gap-3">
+          <p className="text-sm text-slate-600 dark:text-slate-300">
+            Analysis complete — turn it into a project-specific deployment plan.
+          </p>
+          <button onClick={() => blueprintMut.mutate()} disabled={blueprintMut.isPending} className="btn-primary text-sm">
+            {blueprintMut.isPending
+              ? <span className="inline-flex items-center gap-2"><Loader2 className="w-4 h-4 animate-spin" /> Generating…</span>
+              : <span className="inline-flex items-center gap-2"><DraftingCompass className="w-4 h-4" /> Generate deployment blueprint</span>}
+          </button>
+          {blueprintMut.isError && (
+            <p className="text-sm text-red-600 dark:text-red-400 w-full">{errorMessage(blueprintMut.error)}</p>
+          )}
         </div>
       )}
 

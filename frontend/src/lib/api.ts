@@ -1,5 +1,5 @@
 import axios, { AxiosError } from 'axios';
-import type { ApiResponse, AuthResponse, User, Project, ProjectSummary, DeploymentPlan, DeploymentStep, GuideCategory, Guide, CommandSnippet, ProjectEnvVar, EnvVarDefinition, GlossaryTerm, DashboardData, LoginRequest, RegisterRequest, TechnologySelection, ErrorReportRequest, RepositoryAnalysis } from '@/types';
+import type { ApiResponse, AuthResponse, User, Project, ProjectSummary, DeploymentPlan, DeploymentStep, GuideCategory, Guide, CommandSnippet, ProjectEnvVar, EnvVarDefinition, GlossaryTerm, DashboardData, LoginRequest, RegisterRequest, TechnologySelection, ErrorReportRequest, RepositoryAnalysis, StackDetectionResult, BlueprintResponse, ImportRepositoryResponse } from '@/types';
 
 const api = axios.create({
   baseURL: import.meta.env.VITE_API_BASE_URL || '',
@@ -84,6 +84,20 @@ export const analysisApi = {
   latest: (projectId: number) => wrap(api.get<ApiResponse<RepositoryAnalysis>>(`/projects/${projectId}/analysis`)),
   run: (projectId: number, repository: string) =>
     wrap(api.post<ApiResponse<RepositoryAnalysis>>(`/projects/${projectId}/analysis`, { repository })),
+};
+
+export const blueprintApi = {
+  latest: (projectId: number) => wrap(api.get<ApiResponse<BlueprintResponse>>(`/projects/${projectId}/blueprint`)),
+  generate: (projectId: number) => wrap(api.post<ApiResponse<BlueprintResponse>>(`/projects/${projectId}/blueprint`)),
+  override: (projectId: number, overrides: Record<string, string>) =>
+    wrap(api.put<ApiResponse<BlueprintResponse>>(`/projects/${projectId}/blueprint/overrides`, overrides)),
+};
+
+export const importApi = {
+  preview: (repository: string) =>
+    wrap(api.post<ApiResponse<StackDetectionResult>>('/repositories/preview-analysis', { repository })),
+  importRepository: (repository: string) =>
+    wrap(api.post<ApiResponse<ImportRepositoryResponse>>('/projects/import', { repository })),
 };
 
 export const troubleshootApi = {
