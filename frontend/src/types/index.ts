@@ -411,7 +411,7 @@ export interface AssistResponse {
 
 // ==================== Stage 4: Controlled Deployment Automation ====================
 
-export type ProviderName = 'GITHUB' | 'NETLIFY' | 'RENDER';
+export type ProviderName = 'GITHUB' | 'NETLIFY' | 'RENDER' | 'SUPABASE';
 
 export interface ProviderConnection {
   provider: ProviderName;
@@ -478,12 +478,115 @@ export interface EnvVarPlanItem {
   valueStatus: 'READY' | 'NEEDS_INPUT' | 'WILL_BE_GENERATED' | 'FROM_PREVIOUS_STEP';
 }
 
+export interface MigrationView {
+  name: string;
+  checksum: string;
+  order: number;
+  previouslyApplied: boolean;
+  destructive: boolean;
+  safetyClassification: string;
+  reason?: string;
+}
+
 export interface DatabaseHandoff {
   required: boolean;
   detectedProvider?: string;
   connectionSupplied: boolean;
   requiredFields: string[];
   instructions?: string;
+  choice?: string;
+  supabaseConnected?: boolean;
+  supabaseOrgId?: string;
+  supabaseProjectRef?: string;
+  supabaseProjectName?: string;
+  supabaseRegion?: string;
+  applyMigrations?: boolean;
+  migrations?: MigrationView[];
+}
+
+// ----- Supabase (Stage 5) -----
+export interface SupabaseOrganization {
+  id: string;
+  name: string;
+}
+
+export interface SupabaseProject {
+  ref: string;
+  name: string;
+  organizationId?: string;
+  region?: string;
+  status: string;
+  host?: string;
+  restUrl?: string;
+}
+
+export type DatabaseChoice = 'MANUAL' | 'EXISTING_SUPABASE_PROJECT' | 'CREATE_SUPABASE_PROJECT';
+
+// ----- Intelligent project status (Stage 5) -----
+export type ProjectDashboardStatus =
+  | 'NOT_ANALYSED' | 'ANALYSING' | 'BLUEPRINT_READY' | 'SETUP_REQUIRED'
+  | 'WAITING_FOR_CONNECTION' | 'WAITING_FOR_SECRET' | 'WAITING_FOR_CONFIRMATION'
+  | 'DEPLOYING' | 'PAUSED' | 'VERIFYING' | 'HEALTHY' | 'DEGRADED' | 'FAILED' | 'UNKNOWN';
+
+export interface StatusMilestone { key: string; label: string; done: boolean; }
+export interface RequiredAction { type: string; label: string; detail?: string; }
+export interface RecommendedAction { type: string; label: string; }
+
+export interface ProjectStatus {
+  projectId: number;
+  projectName: string;
+  status: ProjectDashboardStatus;
+  summary: string;
+  currentAction?: string;
+  milestones: StatusMilestone[];
+  requiredActions: RequiredAction[];
+  recommendedNextStep?: RecommendedAction;
+  latestRunId?: number;
+  latestRunStatus?: string;
+  mode?: string;
+  verificationStatus?: string;
+  frontendUrl?: string;
+  backendUrl?: string;
+  pullRequestUrl?: string;
+  supabaseProjectUrl?: string;
+  lastUpdated?: string;
+  aiExplanation?: string;
+}
+
+export interface ActivityEvent {
+  id: number;
+  automationRunId?: number;
+  eventType: string;
+  provider?: string;
+  actionId?: string;
+  summary: string;
+  status?: string;
+  createdAt: string;
+}
+
+// ----- Project Copilot (Stage 5) -----
+export interface ProposedAction {
+  type: 'NONE' | 'DEPLOY' | 'RETRY_FAILED_STEP';
+  summary?: string;
+  planHash?: string;
+  executable?: boolean;
+  targetRunId?: number;
+}
+
+export interface CopilotMessage {
+  id: number;
+  role: 'USER' | 'ASSISTANT';
+  content: string;
+  aiAvailable: boolean;
+  proposedAction?: ProposedAction;
+  createdAt: string;
+}
+
+export interface CopilotConversation {
+  conversationId: number;
+  projectId: number;
+  aiAvailable: boolean;
+  messages: CopilotMessage[];
 }
 
 export interface DeploymentActionPlan {

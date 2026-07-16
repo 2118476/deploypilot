@@ -83,19 +83,44 @@ public class DeploymentActionPlan {
         public String getValueStatus() { return valueStatus; } public void setValueStatus(String v) { this.valueStatus = v; }
     }
 
-    /** Database handoff instructions. Import-only in this stage; no creation. */
+    /**
+     * Database handoff. In MANUAL mode DeployPilot imports an existing connection
+     * (it never creates a database). With a Supabase connection and an explicit
+     * choice, controlled Supabase automation is planned instead.
+     */
     public static class DatabaseHandoff {
         private boolean required;
         private String detectedProvider;        // Supabase | Render PostgreSQL | ...
         private boolean connectionSupplied;
         private List<String> requiredFields = new ArrayList<>();
         private String instructions;
+        // Supabase controlled automation (Stage 5)
+        private String choice = "MANUAL";       // MANUAL | EXISTING_SUPABASE_PROJECT | CREATE_SUPABASE_PROJECT
+        private boolean supabaseConnected;
+        private String supabaseOrgId;
+        private String supabaseProjectRef;
+        private String supabaseProjectName;
+        private String supabaseRegion;
+        private boolean applyMigrations;
+        private List<MigrationView> migrations = new ArrayList<>();
+
+        /** Display metadata for one repository-owned migration. Never carries SQL. */
+        public record MigrationView(String name, String checksum, int order, boolean previouslyApplied,
+                                    boolean destructive, String safetyClassification, String reason) {}
 
         public boolean isRequired() { return required; } public void setRequired(boolean r) { this.required = r; }
         public String getDetectedProvider() { return detectedProvider; } public void setDetectedProvider(String d) { this.detectedProvider = d; }
         public boolean isConnectionSupplied() { return connectionSupplied; } public void setConnectionSupplied(boolean c) { this.connectionSupplied = c; }
         public List<String> getRequiredFields() { return requiredFields; } public void setRequiredFields(List<String> r) { this.requiredFields = r; }
         public String getInstructions() { return instructions; } public void setInstructions(String i) { this.instructions = i; }
+        public String getChoice() { return choice; } public void setChoice(String c) { this.choice = c; }
+        public boolean isSupabaseConnected() { return supabaseConnected; } public void setSupabaseConnected(boolean s) { this.supabaseConnected = s; }
+        public String getSupabaseOrgId() { return supabaseOrgId; } public void setSupabaseOrgId(String s) { this.supabaseOrgId = s; }
+        public String getSupabaseProjectRef() { return supabaseProjectRef; } public void setSupabaseProjectRef(String s) { this.supabaseProjectRef = s; }
+        public String getSupabaseProjectName() { return supabaseProjectName; } public void setSupabaseProjectName(String s) { this.supabaseProjectName = s; }
+        public String getSupabaseRegion() { return supabaseRegion; } public void setSupabaseRegion(String s) { this.supabaseRegion = s; }
+        public boolean isApplyMigrations() { return applyMigrations; } public void setApplyMigrations(boolean a) { this.applyMigrations = a; }
+        public List<MigrationView> getMigrations() { return migrations; } public void setMigrations(List<MigrationView> m) { this.migrations = m; }
     }
 
     public String getRepository() { return repository; } public void setRepository(String r) { this.repository = r; }

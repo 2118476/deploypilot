@@ -310,6 +310,15 @@ public class AutomationService {
             setBranch(r.getBranch());
             setExistingSites(r.getExistingSites());
             setNewSiteNames(r.getNewSiteNames());
+            // Database (Supabase) choices must be reproduced exactly on execute/retry,
+            // otherwise the recomputed plan hash would differ from the confirmed one.
+            setDatabaseChoice(r.getDatabaseChoice());
+            setSupabaseOrgId(r.getSupabaseOrgId());
+            setSupabaseProjectRef(r.getSupabaseProjectRef());
+            setSupabaseProjectName(r.getSupabaseProjectName());
+            setSupabaseRegion(r.getSupabaseRegion());
+            setSupabasePlan(r.getSupabasePlan());
+            setApplyMigrations(r.isApplyMigrations());
         }
     }
 }

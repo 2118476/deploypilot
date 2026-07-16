@@ -1,26 +1,23 @@
 package com.deploypilot.service;
 
-import com.deploypilot.config.GeminiConfig;
-import org.springframework.http.HttpEntity;
-import org.springframework.http.HttpHeaders;
-import org.springframework.http.MediaType;
-import org.springframework.http.ResponseEntity;
+import com.deploypilot.ai.AiProvider;
 import org.springframework.stereotype.Service;
-import org.springframework.web.client.RestTemplate;
 
-import java.util.List;
-import java.util.Map;
-
+/**
+ * Thin facade over {@link AiProvider}, kept for backward compatibility with the
+ * existing troubleshooter and project-assist callers. All Gemini access now goes
+ * through the single {@code GeminiAiProvider}, which applies timeouts, size
+ * limits and sanitised errors — a raw provider exception is never returned.
+ */
 @Service
 public class GeminiService {
 
-    private final GeminiConfig config;
-    private final RestTemplate restTemplate = new RestTemplate();
+    private final AiProvider ai;
 
-    public GeminiService(GeminiConfig config) { this.config = config; }
+    public GeminiService(AiProvider ai) { this.ai = ai; }
 
     public boolean isConfigured() {
-        return config.getKey() != null && !config.getKey().isBlank();
+        return ai.isConfigured();
     }
 
     public String troubleshoot(String errorContent) {
@@ -28,45 +25,17 @@ public class GeminiService {
     }
 
     /**
-     * Sends an arbitrary (already sanitised) prompt to Gemini. Callers are
-     * responsible for redacting secrets before calling this.
+     * Sends an already-sanitised prompt to the AI. Callers are responsible for
+     * redacting secrets first. Never returns provider internals: on any failure a
+     * safe, generic message is returned.
      */
-    @SuppressWarnings("unchecked")
     public String generate(String prompt) {
-        if (!isConfigured()) {
-            return "AI troubleshooting is not configured. Please set GEMINI_API_KEY environment variable on the backend.";
+        if (!ai.isConfigured()) {
+            return "AI troubleshooting is not configured. Please set GEMINI_API_KEY on the backend.";
         }
-
-        Map<String, Object> contentPart = Map.of("text", prompt);
-        Map<String, Object> content = Map.of("parts", List.of(contentPart));
-        Map<String, Object> body = Map.of("contents", List.of(content));
-
-        HttpHeaders headers = new HttpHeaders();
-        headers.setContentType(MediaType.APPLICATION_JSON);
-        // Send the key as a header so it never appears in URLs or error messages
-        headers.set("x-goog-api-key", config.getKey());
-
-        try {
-            HttpEntity<Map<String, Object>> request = new HttpEntity<>(body, headers);
-            ResponseEntity<Map> response = restTemplate.postForEntity(config.getUrl(), request, Map.class);
-
-            if (response.getBody() != null) {
-                List<Map<String, Object>> candidates = (List<Map<String, Object>>) response.getBody().get("candidates");
-                if (candidates != null && !candidates.isEmpty()) {
-                    Map<String, Object> candidate = candidates.get(0);
-                    Map<String, Object> respContent = (Map<String, Object>) candidate.get("content");
-                    if (respContent != null) {
-                        List<Map<String, Object>> parts = (List<Map<String, Object>>) respContent.get("parts");
-                        if (parts != null && !parts.isEmpty()) {
-                            return (String) parts.get(0).get("text");
-                        }
-                    }
-                }
-            }
-            return "Could not parse AI response. Please try again with a shorter error message.";
-        } catch (Exception e) {
-            return "Error calling AI service: " + e.getMessage() + ". Please try again later.";
-        }
+        AiProvider.AiResponse response = ai.generate(prompt);
+        return response.ok() ? response.text()
+            : (response.errorSummary() != null ? response.errorSummary() : "AI is temporarily unavailable.");
     }
 
     private String buildPrompt(String errorContent) {

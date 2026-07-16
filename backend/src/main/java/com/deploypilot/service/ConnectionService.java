@@ -8,6 +8,8 @@ import com.deploypilot.model.enums.ConnectionType;
 import com.deploypilot.model.enums.ProviderType;
 import com.deploypilot.provider.ProviderCredential;
 import com.deploypilot.provider.ProviderRegistry;
+import com.deploypilot.provider.model.DatabaseOrganization;
+import com.deploypilot.provider.model.DatabaseProject;
 import com.deploypilot.provider.model.HostingSite;
 import com.deploypilot.provider.model.ProviderAccount;
 import com.deploypilot.provider.model.RepositorySummary;
@@ -96,11 +98,25 @@ public class ConnectionService {
 
     /** Existing sites/services for the current user's connection to the given hosting provider. */
     public List<HostingSite> listSites(ProviderType provider) {
-        if (provider == ProviderType.GITHUB) {
-            throw new IllegalArgumentException("GitHub does not host sites; use the repository list.");
+        if (provider != ProviderType.NETLIFY && provider != ProviderType.RENDER) {
+            throw new IllegalArgumentException(provider + " does not host sites; use the repository or project list.");
         }
         Long userId = CurrentUserUtil.getCurrentUserId();
         return providers.hosting(provider).listSites(requireCredential(userId, provider));
+    }
+
+    /** Organizations the current user's Supabase connection belongs to. */
+    public List<DatabaseOrganization> listSupabaseOrganizations() {
+        Long userId = CurrentUserUtil.getCurrentUserId();
+        return providers.database(ProviderType.SUPABASE)
+            .listOrganizations(requireCredential(userId, ProviderType.SUPABASE));
+    }
+
+    /** Existing Supabase projects for the current user's connection. */
+    public List<DatabaseProject> listSupabaseProjects() {
+        Long userId = CurrentUserUtil.getCurrentUserId();
+        return providers.database(ProviderType.SUPABASE)
+            .listProjects(requireCredential(userId, ProviderType.SUPABASE));
     }
 
     // ---------- internal use by the automation engine ----------
@@ -124,11 +140,14 @@ public class ConnectionService {
 
     // ---------- helpers ----------
 
+    // Validate the credential using the right kind of provider: GitHub via
+    // GitProvider, Netlify/Render via HostingProvider, Supabase via DatabaseProvider.
     private ProviderAccount validate(ProviderType provider, ProviderCredential credential) {
-        if (provider == ProviderType.GITHUB) {
-            return providers.git().getAccount(credential);
-        }
-        return providers.hosting(provider).getAccount(credential);
+        return switch (provider) {
+            case GITHUB -> providers.git().getAccount(credential);
+            case NETLIFY, RENDER -> providers.hosting(provider).getAccount(credential);
+            case SUPABASE -> providers.database(provider).getAccount(credential);
+        };
     }
 
     private ConnectionType resolveType(ProviderType provider, String input) {
@@ -148,6 +167,7 @@ public class ConnectionService {
             case GITHUB -> ConnectionType.GITHUB_PAT;
             case NETLIFY -> ConnectionType.NETLIFY_PAT;
             case RENDER -> ConnectionType.RENDER_API_KEY;
+            case SUPABASE -> ConnectionType.SUPABASE_PAT;
         };
     }
 
@@ -156,6 +176,7 @@ public class ConnectionService {
             case GITHUB -> type == ConnectionType.GITHUB_APP || type == ConnectionType.GITHUB_PAT;
             case NETLIFY -> type == ConnectionType.NETLIFY_OAUTH || type == ConnectionType.NETLIFY_PAT;
             case RENDER -> type == ConnectionType.RENDER_API_KEY;
+            case SUPABASE -> type == ConnectionType.SUPABASE_PAT || type == ConnectionType.SUPABASE_OAUTH;
         };
     }
 

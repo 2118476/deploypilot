@@ -4,6 +4,8 @@ import com.deploypilot.dto.ApiResponse;
 import com.deploypilot.dto.ConnectRequest;
 import com.deploypilot.dto.ConnectionResponse;
 import com.deploypilot.model.enums.ProviderType;
+import com.deploypilot.provider.model.DatabaseOrganization;
+import com.deploypilot.provider.model.DatabaseProject;
 import com.deploypilot.provider.model.HostingSite;
 import com.deploypilot.provider.model.RepositorySummary;
 import com.deploypilot.service.ConnectionService;
@@ -56,6 +58,18 @@ public class ConnectionController {
     @GetMapping("/{provider}/sites")
     public ResponseEntity<ApiResponse<List<HostingSite>>> sites(@PathVariable String provider) {
         return ResponseEntity.ok(ApiResponse.ok(connectionService.listSites(parseProvider(provider))));
+    }
+
+    /** Organizations the connected Supabase account belongs to (no tokens exposed). */
+    @GetMapping("/supabase/organizations")
+    public ResponseEntity<ApiResponse<List<DatabaseOrganization>>> supabaseOrganizations() {
+        return ResponseEntity.ok(ApiResponse.ok(connectionService.listSupabaseOrganizations()));
+    }
+
+    /** Existing Supabase projects for the connected account. */
+    @GetMapping("/supabase/projects")
+    public ResponseEntity<ApiResponse<List<DatabaseProject>>> supabaseProjects() {
+        return ResponseEntity.ok(ApiResponse.ok(connectionService.listSupabaseProjects()));
     }
 
     private ProviderType parseProvider(String provider) {

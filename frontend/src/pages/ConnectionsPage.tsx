@@ -5,7 +5,7 @@ import { AxiosError } from 'axios';
 import { connectionApi } from '@/lib/api';
 import type { ApiResponse, ProviderConnection, ProviderName } from '@/types';
 import {
-  Github, Globe, Server, Plug, PlugZap, CheckCircle2, ShieldCheck, Loader2, Trash2, ArrowLeft, ExternalLink,
+  Github, Globe, Server, Database, Plug, PlugZap, CheckCircle2, ShieldCheck, Loader2, Trash2, ArrowLeft, ExternalLink,
 } from 'lucide-react';
 
 const PROVIDERS: { name: ProviderName; label: string; icon: React.ComponentType<{ className?: string }>;
@@ -30,6 +30,13 @@ const PROVIDERS: { name: ProviderName; label: string; icon: React.ComponentType<
     help: 'Render → Account Settings → API Keys → Create API Key.',
     url: 'https://dashboard.render.com/u/settings#api-keys',
     permissions: 'Manage your web services, environment variables and deploys',
+  },
+  {
+    name: 'SUPABASE', label: 'Supabase', icon: Database,
+    tokenLabel: 'Personal access token',
+    help: 'Supabase → Account → Access Tokens → Generate new token. Used with the Supabase Management API to prepare your database.',
+    url: 'https://supabase.com/dashboard/account/tokens',
+    permissions: 'Read organizations and projects · create projects (free plan) · read API keys · run approved migrations',
   },
 ];
 
@@ -57,9 +64,9 @@ export default function ConnectionsPage() {
       <div className="card p-4 mb-6 flex items-start gap-3 border-primary-200 dark:border-primary-800 bg-primary-50/50 dark:bg-primary-900/10">
         <ShieldCheck className="w-5 h-5 text-primary-600 shrink-0 mt-0.5" />
         <p className="text-sm text-slate-600 dark:text-slate-300">
-          Connect your own GitHub, Netlify and Render accounts. Tokens are encrypted on the server, never shown again and
-          never sent to your browser. You choose exactly which repositories and services DeployPilot can use, and you can
-          disconnect at any time.
+          Connect your own GitHub, Netlify, Render and Supabase accounts. Tokens are encrypted on the server, never shown
+          again and never sent to your browser. You choose exactly which repositories, services and databases DeployPilot
+          can use, and you can disconnect at any time.
         </p>
       </div>
 

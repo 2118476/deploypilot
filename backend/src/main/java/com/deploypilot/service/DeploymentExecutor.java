@@ -3,6 +3,7 @@ package com.deploypilot.service;
 import com.deploypilot.dto.*;
 import com.deploypilot.model.AutomationRun;
 import com.deploypilot.model.enums.ActionStatus;
+import com.deploypilot.model.enums.ActivityEventType;
 import com.deploypilot.model.enums.AutomationRunStatus;
 import com.deploypilot.model.enums.ProviderType;
 import com.deploypilot.provider.HostingProvider;
@@ -53,6 +54,8 @@ public class DeploymentExecutor {
     private final SecretService secretService;
     private final ProviderRegistry providers;
     private final DeploymentVerificationService verificationService;
+    private final SupabaseDeploymentCollaborator supabase;
+    private final ProjectActivityService activityService;
     private final ObjectMapper objectMapper;
 
     private final long pollIntervalMs;
@@ -65,6 +68,8 @@ public class DeploymentExecutor {
                               SecretService secretService,
                               ProviderRegistry providers,
                               DeploymentVerificationService verificationService,
+                              SupabaseDeploymentCollaborator supabase,
+                              ProjectActivityService activityService,
                               ObjectMapper objectMapper,
                               @Value("${deploypilot.automation.poll-interval-ms:2000}") long pollIntervalMs,
                               @Value("${deploypilot.automation.poll-max-attempts:60}") int pollMaxAttempts,
@@ -75,6 +80,8 @@ public class DeploymentExecutor {
         this.secretService = secretService;
         this.providers = providers;
         this.verificationService = verificationService;
+        this.supabase = supabase;
+        this.activityService = activityService;
         this.objectMapper = objectMapper;
         this.pollIntervalMs = pollIntervalMs;
         this.pollMaxAttempts = pollMaxAttempts;
@@ -115,6 +122,8 @@ public class DeploymentExecutor {
         run.setStatus(AutomationRunStatus.RUNNING);
         run.setFailureReason(null);
         persist(run, steps, outputs);
+        activityService.record(userId, projectId, run.getId(), ActivityEventType.AUTOMATION_STARTED,
+            null, null, "Automation started (" + run.getMode() + ")", "RUNNING");
 
         List<DeploymentActionPlan.PlannedAction> actions = plan.getActions();
         for (int i = 0; i < actions.size(); i++) {
@@ -134,18 +143,22 @@ public class DeploymentExecutor {
             try {
                 result = dispatch(action, plan, bp, envIndex, outputs, creds, projectId, userId);
             } catch (PauseSignal ps) {
-                step.setStatus(ActionStatus.PENDING.name());
-                step.setDetail(ps.getMessage());
-                run.setStatus(AutomationRunStatus.PAUSED);
-                run.setFailureReason(ps.getMessage());
-                persist(run, steps, outputs);
+                pause(run, steps, outputs, step, ps.getMessage(), userId, projectId);
+                return;
+            } catch (ProviderException.BillingRequired billing) {
+                // Never create a paid resource: pause and explain instead of failing hard.
+                pause(run, steps, outputs, step, billing.getMessage(), userId, projectId);
                 return;
             } catch (ProviderException pe) {
                 fail(run, steps, outputs, step, safe(pe.getMessage()));
+                activityService.record(userId, projectId, run.getId(), ActivityEventType.AUTOMATION_FAILED,
+                    action.getProvider(), action.getId(), "Failed: " + action.getTitle(), "FAILED");
                 return;
             } catch (Exception ex) {
                 log.warn("Automation step {} failed", action.getId(), ex);
                 fail(run, steps, outputs, step, "The step failed unexpectedly. You can retry from here.");
+                activityService.record(userId, projectId, run.getId(), ActivityEventType.AUTOMATION_FAILED,
+                    action.getProvider(), action.getId(), "Failed: " + action.getTitle(), "FAILED");
                 return;
             }
 
@@ -161,13 +174,46 @@ public class DeploymentExecutor {
                 run.setFailureReason(result.detail());
                 run.setCompletedAt(Instant.now());
                 persist(run, steps, outputs);
+                activityService.record(userId, projectId, run.getId(), ActivityEventType.AUTOMATION_FAILED,
+                    action.getProvider(), action.getId(), "Failed: " + action.getTitle(), "FAILED");
                 return;
             }
+            recordStepActivity(run, action, userId, projectId);
         }
 
         run.setStatus(AutomationRunStatus.SUCCEEDED);
         run.setCompletedAt(Instant.now());
         persist(run, steps, outputs);
+        activityService.record(userId, projectId, run.getId(), ActivityEventType.AUTOMATION_SUCCEEDED,
+            null, null, "Deployment automation completed", "SUCCEEDED");
+    }
+
+    private void pause(AutomationRun run, List<ExecutionStep> steps, Map<String, String> outputs,
+                       ExecutionStep step, String message, Long userId, Long projectId) {
+        step.setStatus(ActionStatus.PENDING.name());
+        step.setDetail(message);
+        run.setStatus(AutomationRunStatus.PAUSED);
+        run.setFailureReason(message);
+        persist(run, steps, outputs);
+        activityService.record(userId, projectId, run.getId(), ActivityEventType.AUTOMATION_PAUSED,
+            null, step.getId(), "Paused: " + message, "PAUSED");
+    }
+
+    private void recordStepActivity(AutomationRun run, DeploymentActionPlan.PlannedAction action, Long userId, Long projectId) {
+        ActivityEventType type = switch (action.getId()) {
+            case "repo.pr" -> ActivityEventType.CONFIG_PR_CREATED;
+            case "database.create" -> ActivityEventType.DATABASE_CREATED;
+            case "database.migrations.apply" -> ActivityEventType.MIGRATIONS_APPLIED;
+            case "database.credentials", "database.inspect" -> ActivityEventType.SUPABASE_PREPARED;
+            case "backend.deploy" -> ActivityEventType.BACKEND_DEPLOYED;
+            case "frontend.deploy" -> ActivityEventType.FRONTEND_DEPLOYED;
+            case "verify" -> ActivityEventType.VERIFICATION_COMPLETED;
+            default -> null;
+        };
+        if (type != null) {
+            activityService.record(userId, projectId, run.getId(), type,
+                "NONE".equals(action.getProvider()) ? null : action.getProvider(), action.getId(), action.getTitle(), "SUCCEEDED");
+        }
     }
 
     private StepResult dispatch(DeploymentActionPlan.PlannedAction action, DeploymentActionPlan plan,
@@ -176,9 +222,16 @@ public class DeploymentExecutor {
                                 Long projectId, Long userId) {
         return switch (action.getId()) {
             case "database.confirm" -> handleDatabase(plan, projectId);
+            case "database.inspect" -> supabaseStep(() -> supabase.inspect(cred(creds, ProviderType.SUPABASE, userId), plan.getDatabase(), outputs));
+            case "database.create" -> supabaseStep(() -> supabase.create(cred(creds, ProviderType.SUPABASE, userId), plan.getDatabase(), projectId, userId, outputs));
+            case "database.wait" -> supabaseStep(() -> supabase.waitReady(cred(creds, ProviderType.SUPABASE, userId), outputs));
+            case "database.migrations.inspect" -> supabaseStep(() -> supabase.migrationsInspect(repoRef(plan), branchOf(plan), plan.getDatabase(), projectId, outputs));
+            case "database.migrations.apply" -> supabaseStep(() -> supabase.migrationsApply(cred(creds, ProviderType.SUPABASE, userId), repoRef(plan), branchOf(plan), projectId, userId, outputs));
+            case "database.credentials" -> supabaseStep(() -> supabase.credentials(cred(creds, ProviderType.SUPABASE, userId), projectId, userId, outputs));
+            case "verify.database" -> supabaseStep(() -> supabase.verifyDatabase(cred(creds, ProviderType.SUPABASE, userId), outputs));
             case "repo.pr" -> handleRepoPr(plan, bp, creds, userId);
             case "backend.ensure" -> handleEnsure(action, plan, bp, "BACKEND", outputs, creds, userId);
-            case "backend.env", "backend.cors" -> handleEnv(action, ProviderType.RENDER, OUT_BACKEND_SERVICE_ID,
+            case "backend.env", "backend.cors", "backend.database-env" -> handleEnv(action, ProviderType.RENDER, OUT_BACKEND_SERVICE_ID,
                 envIndex, outputs, creds, projectId, userId);
             case "backend.deploy" -> handleDeploy(plan, ProviderType.RENDER, OUT_BACKEND_SERVICE_ID,
                 OUT_BACKEND_DEPLOY_ID, OUT_BACKEND_URL, outputs, creds, userId);
@@ -191,6 +244,19 @@ public class DeploymentExecutor {
             case "verify" -> handleVerify(plan, outputs, projectId);
             default -> new StepResult(ActionStatus.SKIPPED, "No action for " + action.getId(), null);
         };
+    }
+
+    /** Runs a Supabase collaborator operation (which mutates outputs directly) as a step. */
+    private StepResult supabaseStep(java.util.function.Supplier<String> op) {
+        return new StepResult(ActionStatus.SUCCEEDED, op.get(), null);
+    }
+
+    private RepositoryRef repoRef(DeploymentActionPlan plan) {
+        return RepositoryRef.parse(plan.getRepository());
+    }
+
+    private String branchOf(DeploymentActionPlan plan) {
+        return plan.getBranch() != null && !plan.getBranch().isBlank() ? plan.getBranch() : "main";
     }
 
     // ---------- handlers ----------

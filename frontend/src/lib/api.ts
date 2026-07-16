@@ -1,5 +1,5 @@
 import axios, { AxiosError } from 'axios';
-import type { ApiResponse, AuthResponse, User, Project, ProjectSummary, DeploymentPlan, DeploymentStep, GuideCategory, Guide, CommandSnippet, ProjectEnvVar, EnvVarDefinition, GlossaryTerm, DashboardData, LoginRequest, RegisterRequest, TechnologySelection, ErrorReportRequest, RepositoryAnalysis, StackDetectionResult, BlueprintResponse, ImportRepositoryResponse, VerificationRun, AssistResponse, ProviderConnection, ProviderName, RepositorySummary, HostingSite, SecretView, DeploymentActionPlan, ConfirmationResponse, AutomationRun } from '@/types';
+import type { ApiResponse, AuthResponse, User, Project, ProjectSummary, DeploymentPlan, DeploymentStep, GuideCategory, Guide, CommandSnippet, ProjectEnvVar, EnvVarDefinition, GlossaryTerm, DashboardData, LoginRequest, RegisterRequest, TechnologySelection, ErrorReportRequest, RepositoryAnalysis, StackDetectionResult, BlueprintResponse, ImportRepositoryResponse, VerificationRun, AssistResponse, ProviderConnection, ProviderName, RepositorySummary, HostingSite, SecretView, DeploymentActionPlan, ConfirmationResponse, AutomationRun, SupabaseOrganization, SupabaseProject, ProjectStatus, ActivityEvent, CopilotConversation, CopilotMessage } from '@/types';
 
 const api = axios.create({
   baseURL: import.meta.env.VITE_API_BASE_URL || '',
@@ -118,6 +118,14 @@ export interface PlanInputs {
   branch?: string;
   existingSites?: Record<string, string>;
   newSiteNames?: Record<string, string>;
+  // Database (Supabase) choices
+  databaseChoice?: string;
+  supabaseOrgId?: string;
+  supabaseProjectRef?: string;
+  supabaseProjectName?: string;
+  supabaseRegion?: string;
+  supabasePlan?: string;
+  applyMigrations?: boolean;
 }
 
 export const connectionApi = {
@@ -129,6 +137,25 @@ export const connectionApi = {
   repositories: () => wrap(api.get<ApiResponse<RepositorySummary[]>>('/connections/github/repositories')),
   sites: (provider: ProviderName) =>
     wrap(api.get<ApiResponse<HostingSite[]>>(`/connections/${provider.toLowerCase()}/sites`)),
+  supabaseOrganizations: () =>
+    wrap(api.get<ApiResponse<SupabaseOrganization[]>>('/connections/supabase/organizations')),
+  supabaseProjects: () =>
+    wrap(api.get<ApiResponse<SupabaseProject[]>>('/connections/supabase/projects')),
+};
+
+export const statusApi = {
+  get: (projectId: number) => wrap(api.get<ApiResponse<ProjectStatus>>(`/projects/${projectId}/status`)),
+  activity: (projectId: number, limit = 20) =>
+    wrap(api.get<ApiResponse<ActivityEvent[]>>(`/projects/${projectId}/activity?limit=${limit}`)),
+};
+
+export const copilotApi = {
+  current: (projectId: number) =>
+    wrap(api.get<ApiResponse<CopilotConversation>>(`/projects/${projectId}/copilot/conversations/current`)),
+  send: (projectId: number, message: string) =>
+    wrap(api.post<ApiResponse<CopilotMessage>>(`/projects/${projectId}/copilot/messages`, { message })),
+  clear: (projectId: number) =>
+    wrap(api.delete<ApiResponse<void>>(`/projects/${projectId}/copilot/conversations/current`)),
 };
 
 export const automationApi = {

@@ -34,10 +34,17 @@ public class MockProviderServer implements AutoCloseable {
     // Simple in-memory provider state.
     private final Map<String, Map<String, Object>> netlifySites = new LinkedHashMap<>();
     private final Map<String, Map<String, Object>> renderServices = new LinkedHashMap<>();
+    private final Map<String, Map<String, Object>> supabaseProjects = new LinkedHashMap<>();
     private int netlifySeq = 0;
     private int renderSeq = 0;
+    private int supabaseSeq = 0;
     // When true, GitHub reports the config files already match (no PR needed).
     private volatile boolean gitHubFilesAlreadyPresent = false;
+    // Supabase simulation switches.
+    public static final String SUPABASE_SERVICE_ROLE_MARKER = "service-role-SECRET-key";
+    private volatile boolean supabaseBillingRequired = false;
+    private volatile boolean supabaseQueryFail = false;
+    private volatile int supabaseRateLimitRemaining = 0;
 
     public MockProviderServer() throws IOException {
         server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
@@ -50,8 +57,21 @@ public class MockProviderServer implements AutoCloseable {
     public String githubBaseUrl() { return baseUrl() + "/gh"; }
     public String netlifyBaseUrl() { return baseUrl() + "/nf"; }
     public String renderBaseUrl() { return baseUrl() + "/rd"; }
+    public String supabaseBaseUrl() { return baseUrl() + "/sb"; }
     public String liveFrontendUrl() { return baseUrl() + "/live-frontend"; }
     public String liveBackendUrl() { return baseUrl() + "/live-backend"; }
+
+    public void setSupabaseBillingRequired(boolean v) { this.supabaseBillingRequired = v; }
+    public void setSupabaseQueryFail(boolean v) { this.supabaseQueryFail = v; }
+    public void setSupabaseRateLimit(int calls) { this.supabaseRateLimitRemaining = calls; }
+    /** Pre-seed an existing Supabase project so it can be selected/inspected. */
+    public void seedSupabaseProject(String ref, String name) {
+        Map<String, Object> p = new LinkedHashMap<>();
+        p.put("ref", ref); p.put("id", ref); p.put("name", name);
+        p.put("organization_id", "org-1"); p.put("region", "us-east-1");
+        p.put("status", "ACTIVE_HEALTHY"); p.put("host", "db." + ref + ".supabase.co");
+        supabaseProjects.put(ref, p);
+    }
 
     public List<Recorded> requests() { return new ArrayList<>(requests); }
     public long count(String method, String pathPrefix) {
@@ -76,9 +96,14 @@ public class MockProviderServer implements AutoCloseable {
         requests.clear();
         netlifySites.clear();
         renderServices.clear();
+        supabaseProjects.clear();
         netlifySeq = 0;
         renderSeq = 0;
+        supabaseSeq = 0;
         gitHubFilesAlreadyPresent = false;
+        supabaseBillingRequired = false;
+        supabaseQueryFail = false;
+        supabaseRateLimitRemaining = 0;
     }
 
     @Override public void close() { server.stop(0); }
@@ -94,6 +119,7 @@ public class MockProviderServer implements AutoCloseable {
             if (path.startsWith("/gh")) handleGitHub(ex, method, path.substring(3), body);
             else if (path.startsWith("/nf")) handleNetlify(ex, method, path.substring(3), body);
             else if (path.startsWith("/rd")) handleRender(ex, method, path.substring(3), body);
+            else if (path.startsWith("/sb")) handleSupabase(ex, method, path.substring(3), body);
             else if (path.startsWith("/live-frontend")) handleLiveFrontend(ex, method);
             else if (path.startsWith("/live-backend")) handleLiveBackend(ex, method);
             else json(ex, 404, "{}");
@@ -235,6 +261,62 @@ public class MockProviderServer implements AutoCloseable {
     private String renderServiceJson(Map<String, Object> s) {
         return "{\"id\":\"" + s.get("id") + "\",\"name\":\"" + s.get("name") + "\",\"repo\":\"" + str(s.get("repo"))
             + "\",\"serviceDetails\":{\"url\":\"" + s.get("url") + "\"}}";
+    }
+
+    // ---------- Supabase (Management API) ----------
+
+    private void handleSupabase(HttpExchange ex, String method, String p, String body) throws IOException {
+        // Rate-limit simulation: the first N calls get 429 so retry/backoff can be exercised.
+        if (supabaseRateLimitRemaining > 0) {
+            supabaseRateLimitRemaining--;
+            json(ex, 429, "{\"message\":\"Too Many Requests\"}");
+            return;
+        }
+        if (p.equals("/organizations")) {
+            json(ex, 200, "[{\"id\":\"org-1\",\"name\":\"My Org\"}]");
+        } else if (p.equals("/projects") && method.equals("POST")) {
+            if (supabaseBillingRequired) {
+                json(ex, 402, "{\"message\":\"free tier project limit reached; upgrade required\"}");
+                return;
+            }
+            String ref = "proj-" + (++supabaseSeq);
+            Map<String, Object> proj = new LinkedHashMap<>();
+            proj.put("ref", ref); proj.put("id", ref);
+            proj.put("name", extractOr(body, "\"name\"\\s*:\\s*\"([^\"]+)\"", ref));
+            proj.put("organization_id", extractOr(body, "\"organization_id\"\\s*:\\s*\"([^\"]+)\"", "org-1"));
+            proj.put("region", extractOr(body, "\"region\"\\s*:\\s*\"([^\"]+)\"", "us-east-1"));
+            proj.put("status", "ACTIVE_HEALTHY");
+            proj.put("host", "db." + ref + ".supabase.co");
+            supabaseProjects.put(ref, proj);
+            json(ex, 201, supabaseProjectJson(proj));
+        } else if (p.equals("/projects")) {
+            StringBuilder sb = new StringBuilder("[");
+            boolean first = true;
+            for (Map<String, Object> pr : supabaseProjects.values()) {
+                if (!first) sb.append(",");
+                sb.append(supabaseProjectJson(pr));
+                first = false;
+            }
+            json(ex, 200, sb.append("]").toString());
+        } else if (p.matches("/projects/[^/]+/api-keys")) {
+            json(ex, 200, "[{\"name\":\"anon\",\"api_key\":\"anon-public-key\"},"
+                + "{\"name\":\"service_role\",\"api_key\":\"" + SUPABASE_SERVICE_ROLE_MARKER + "\"}]");
+        } else if (p.matches("/projects/[^/]+/database/query") && method.equals("POST")) {
+            if (supabaseQueryFail) { json(ex, 400, "{\"message\":\"sql error\"}"); return; }
+            json(ex, 201, "[]");
+        } else if (p.matches("/projects/[^/]+")) {
+            String ref = p.substring("/projects/".length());
+            Map<String, Object> pr = supabaseProjects.get(ref);
+            json(ex, pr == null ? 404 : 200, pr == null ? "{\"message\":\"Not Found\"}" : supabaseProjectJson(pr));
+        } else {
+            json(ex, 404, "{}");
+        }
+    }
+
+    private String supabaseProjectJson(Map<String, Object> p) {
+        return "{\"ref\":\"" + p.get("ref") + "\",\"id\":\"" + p.get("id") + "\",\"name\":\"" + p.get("name")
+            + "\",\"organization_id\":\"" + str(p.get("organization_id")) + "\",\"region\":\"" + str(p.get("region"))
+            + "\",\"status\":\"" + p.get("status") + "\",\"database\":{\"host\":\"" + str(p.get("host")) + "\"}}";
     }
 
     // ---------- live deployment targets (for verification) ----------

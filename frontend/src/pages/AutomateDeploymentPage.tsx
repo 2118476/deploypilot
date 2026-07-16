@@ -5,6 +5,7 @@ import { AxiosError } from 'axios';
 import { automationApi, connectionApi, projectApi, type PlanInputs } from '@/lib/api';
 import type {
   ApiResponse, DeploymentActionPlan, PlannedAction, EnvVarPlanItem, AutomationRun, ExecutionStep, ProviderConnection,
+  DatabaseChoice,
 } from '@/types';
 import {
   Rocket, ShieldCheck, ShieldAlert, CheckCircle2, XCircle, Loader2, ArrowLeft, Plug, Database,
@@ -16,7 +17,7 @@ const TYPE_BADGE: Record<string, string> = {
   DEPLOY: 'badge-green', RESTART: 'badge-amber', DESTRUCTIVE: 'badge-red',
 };
 const PROVIDER_ICON: Record<string, React.ComponentType<{ className?: string }>> = {
-  GITHUB: Github, NETLIFY: Globe, RENDER: Server, NONE: Circle,
+  GITHUB: Github, NETLIFY: Globe, RENDER: Server, SUPABASE: Database, NONE: Circle,
 };
 const STEP_META: Record<string, { cls: string; icon: React.ComponentType<{ className?: string }>; spin?: boolean }> = {
   PENDING: { cls: 'text-slate-400', icon: Circle },
@@ -48,11 +49,23 @@ export default function AutomateDeploymentPage() {
   const [plan, setPlan] = useState<DeploymentActionPlan | null>(null);
   const [confirmation, setConfirmation] = useState<{ runId: number; nonce: string; expiresAt: string } | null>(null);
   const [activeRunId, setActiveRunId] = useState<number | null>(null);
+  const [db, setDb] = useState<{ choice: DatabaseChoice; orgId: string; projectRef: string; projectName: string; region: string; applyMigrations: boolean }>({
+    choice: 'MANUAL', orgId: '', projectRef: '', projectName: '', region: 'us-east-1', applyMigrations: false,
+  });
 
   const { data: project } = useQuery({ queryKey: ['project', projectId], queryFn: () => projectApi.get(projectId) });
   const { data: connections } = useQuery({ queryKey: ['connections'], queryFn: connectionApi.list });
+  const supabaseConnected = !!connections?.find((c) => c.provider === 'SUPABASE')?.connected;
 
   const inputs: PlanInputs = { mode };
+  if (db.choice !== 'MANUAL') {
+    inputs.databaseChoice = db.choice;
+    inputs.supabaseOrgId = db.orgId || undefined;
+    inputs.supabaseProjectRef = db.projectRef || undefined;
+    inputs.supabaseProjectName = db.projectName || undefined;
+    inputs.supabaseRegion = db.region || undefined;
+    inputs.applyMigrations = db.applyMigrations;
+  }
 
   const planMut = useMutation({
     mutationFn: () => automationApi.plan(projectId, inputs),
@@ -120,6 +133,11 @@ export default function AutomateDeploymentPage() {
             </button>
           ))}
         </div>
+
+        {mode === 'DEPLOY_FOR_ME' && (
+          <DatabaseChoicePanel db={db} setDb={setDb} supabaseConnected={supabaseConnected} onChange={() => { setPlan(null); setConfirmation(null); }} />
+        )}
+
         <button className="btn-primary mt-4" disabled={planMut.isPending} onClick={() => planMut.mutate()}>
           {planMut.isPending
             ? <span className="inline-flex items-center gap-2"><Loader2 className="w-4 h-4 animate-spin" /> Generating…</span>
@@ -151,7 +169,7 @@ function ConnectionStatus({ connections, missing }: { connections?: ProviderConn
         <Link to="/connections" className="text-sm text-primary-600 hover:text-primary-700">Manage</Link>
       </div>
       <div className="flex flex-wrap gap-2 mt-3">
-        {(['GITHUB', 'NETLIFY', 'RENDER'] as const).map((p) => {
+        {(['GITHUB', 'NETLIFY', 'RENDER', 'SUPABASE'] as const).map((p) => {
           const c = connections?.find((x) => x.provider === p);
           const Icon = PROVIDER_ICON[p];
           return (
@@ -165,9 +183,99 @@ function ConnectionStatus({ connections, missing }: { connections?: ProviderConn
       {missing.length > 0 && (
         <p className="text-xs text-amber-600 dark:text-amber-400 mt-2">
           Connect {missing.map((m) => m.charAt(0) + m.slice(1).toLowerCase()).join(', ')} to deploy automatically.
+          Supabase is optional — connect it only to let DeployPilot prepare your database.
         </p>
       )}
     </section>
+  );
+}
+
+type DbState = { choice: DatabaseChoice; orgId: string; projectRef: string; projectName: string; region: string; applyMigrations: boolean };
+
+function DatabaseChoicePanel({ db, setDb, supabaseConnected, onChange }: {
+  db: DbState; setDb: (d: DbState) => void; supabaseConnected: boolean; onChange: () => void;
+}) {
+  const set = (patch: Partial<DbState>) => { setDb({ ...db, ...patch }); onChange(); };
+  const { data: orgs } = useQuery({
+    queryKey: ['supabase-orgs'], queryFn: connectionApi.supabaseOrganizations,
+    enabled: supabaseConnected && db.choice === 'CREATE_SUPABASE_PROJECT',
+  });
+  const { data: projects } = useQuery({
+    queryKey: ['supabase-projects'], queryFn: connectionApi.supabaseProjects,
+    enabled: supabaseConnected && db.choice === 'EXISTING_SUPABASE_PROJECT',
+  });
+
+  return (
+    <div className="mt-4 border-t border-slate-200 dark:border-slate-700 pt-4">
+      <h3 className="text-sm font-semibold flex items-center gap-2 mb-2">
+        <Database className="w-4 h-4 text-primary-600" /> Database (Supabase)
+      </h3>
+      {!supabaseConnected ? (
+        <p className="text-xs text-slate-500">
+          DeployPilot will use the manual database handoff. <Link to="/connections" className="text-primary-600 hover:underline">Connect Supabase</Link> to
+          let DeployPilot create or prepare your database automatically (free plan only).
+        </p>
+      ) : (
+        <div className="space-y-3">
+          <div className="grid sm:grid-cols-3 gap-2">
+            {([
+              { c: 'MANUAL', t: 'Manual', d: 'I will supply DB connection details.' },
+              { c: 'EXISTING_SUPABASE_PROJECT', t: 'Use existing', d: 'Use a Supabase project I already have.' },
+              { c: 'CREATE_SUPABASE_PROJECT', t: 'Create new', d: 'Create a new free Supabase project.' },
+            ] as const).map((o) => (
+              <button key={o.c} type="button" onClick={() => set({ choice: o.c })}
+                className={`text-left p-2.5 rounded-lg border text-xs ${db.choice === o.c
+                  ? 'border-primary-500 bg-primary-50 dark:bg-primary-900/20' : 'border-slate-200 dark:border-slate-700'}`}>
+                <p className="font-semibold">{o.t}</p><p className="text-slate-500 mt-0.5">{o.d}</p>
+              </button>
+            ))}
+          </div>
+
+          {db.choice === 'EXISTING_SUPABASE_PROJECT' && (
+            <label className="block text-sm">
+              <span className="font-medium">Existing project</span>
+              <select className="input w-full mt-1" value={db.projectRef} onChange={(e) => set({ projectRef: e.target.value })}>
+                <option value="">Select a project…</option>
+                {projects?.map((p) => <option key={p.ref} value={p.ref}>{p.name} ({p.status})</option>)}
+              </select>
+            </label>
+          )}
+
+          {db.choice === 'CREATE_SUPABASE_PROJECT' && (
+            <div className="grid sm:grid-cols-3 gap-2">
+              <label className="block text-sm">
+                <span className="font-medium">Organization</span>
+                <select className="input w-full mt-1" value={db.orgId} onChange={(e) => set({ orgId: e.target.value })}>
+                  <option value="">Select…</option>
+                  {orgs?.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
+                </select>
+              </label>
+              <label className="block text-sm">
+                <span className="font-medium">Project name</span>
+                <input className="input w-full mt-1" value={db.projectName} maxLength={60}
+                  onChange={(e) => set({ projectName: e.target.value })} placeholder="my-app-db" />
+              </label>
+              <label className="block text-sm">
+                <span className="font-medium">Region</span>
+                <input className="input w-full mt-1" value={db.region} maxLength={30}
+                  onChange={(e) => set({ region: e.target.value })} placeholder="us-east-1" />
+              </label>
+            </div>
+          )}
+
+          {db.choice !== 'MANUAL' && (
+            <label className="flex items-center gap-2 text-sm">
+              <input type="checkbox" checked={db.applyMigrations} onChange={(e) => set({ applyMigrations: e.target.checked })} />
+              Apply safe, repository-owned migrations (destructive migrations are always blocked)
+            </label>
+          )}
+          <p className="text-xs text-slate-500">
+            DeployPilot never selects a paid plan. Creating a project, applying migrations and changing variables are shown
+            in the plan and only happen after you confirm.
+          </p>
+        </div>
+      )}
+    </div>
   );
 }
 

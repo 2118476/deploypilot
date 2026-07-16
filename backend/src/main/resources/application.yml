@@ -64,6 +64,7 @@ deploypilot:
     github-api-base-url: ${GITHUB_API_BASE_URL:https://api.github.com}
     netlify-api-base-url: ${NETLIFY_API_BASE_URL:https://api.netlify.com/api/v1}
     render-api-base-url: ${RENDER_API_BASE_URL:https://api.render.com/v1}
+    supabase-api-base-url: ${SUPABASE_API_BASE_URL:https://api.supabase.com/v1}
   automation:
     # Master switch for performing real external changes (DEPLOY_FOR_ME mode).
     # Off by default so the safe default never mutates external services.

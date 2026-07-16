@@ -13,11 +13,16 @@ public class ProviderRegistry {
 
     private final GitProvider gitProvider;
     private final Map<ProviderType, HostingProvider> hostingByType = new EnumMap<>(ProviderType.class);
+    private final Map<ProviderType, DatabaseProvider> databaseByType = new EnumMap<>(ProviderType.class);
 
-    public ProviderRegistry(GitProvider gitProvider, List<HostingProvider> hostingProviders) {
+    public ProviderRegistry(GitProvider gitProvider, List<HostingProvider> hostingProviders,
+                            List<DatabaseProvider> databaseProviders) {
         this.gitProvider = gitProvider;
         for (HostingProvider p : hostingProviders) {
             hostingByType.put(p.type(), p);
+        }
+        for (DatabaseProvider p : databaseProviders) {
+            databaseByType.put(p.type(), p);
         }
     }
 
@@ -33,5 +38,17 @@ public class ProviderRegistry {
 
     public boolean isHosting(ProviderType type) {
         return hostingByType.containsKey(type);
+    }
+
+    public DatabaseProvider database(ProviderType type) {
+        DatabaseProvider p = databaseByType.get(type);
+        if (p == null) {
+            throw new ProviderException("No database adapter for provider " + type);
+        }
+        return p;
+    }
+
+    public boolean isDatabase(ProviderType type) {
+        return databaseByType.containsKey(type);
     }
 }

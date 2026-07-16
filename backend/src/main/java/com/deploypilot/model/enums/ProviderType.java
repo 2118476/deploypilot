@@ -4,5 +4,6 @@ package com.deploypilot.model.enums;
 public enum ProviderType {
     GITHUB,
     NETLIFY,
-    RENDER
+    RENDER,
+    SUPABASE
 }

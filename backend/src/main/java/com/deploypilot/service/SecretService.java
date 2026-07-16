@@ -91,14 +91,24 @@ public class SecretService {
         byte[] buf = new byte[48];
         random.nextBytes(buf);
         String generated = Base64.getUrlEncoder().withoutPadding().encodeToString(buf);
-        AutomationSecret secret = new AutomationSecret();
+        store(projectId, userId, name, generated, "Backend service");
+        return generated;
+    }
+
+    /**
+     * Upserts an encrypted secret without an interactive ownership check (used by
+     * the automation executor in a background thread, where the user id is passed
+     * explicitly). The value is never logged or returned.
+     */
+    void store(Long projectId, Long userId, String name, String value, String destination) {
+        if (value == null) return;
+        AutomationSecret secret = repository.findByProjectIdAndVarName(projectId, name).orElseGet(AutomationSecret::new);
         secret.setUserId(userId);
         secret.setProjectId(projectId);
         secret.setVarName(name);
-        secret.setDestination("Backend service");
-        secret.setEncryptedValue(encryption.encrypt(generated));
+        secret.setDestination(destination);
+        secret.setEncryptedValue(encryption.encrypt(value));
         repository.save(secret);
-        return generated;
     }
 
     private SecretView toView(AutomationSecret s) {

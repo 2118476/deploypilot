@@ -11,10 +11,12 @@ import com.deploypilot.exception.UnauthorizedAccessException;
 import com.deploypilot.model.ProviderConnection;
 import com.deploypilot.model.enums.ActionType;
 import com.deploypilot.model.enums.AutomationMode;
+import com.deploypilot.model.enums.DatabaseChoice;
 import com.deploypilot.model.enums.ProviderType;
 import com.deploypilot.model.Project;
 import com.deploypilot.provider.ProviderCredential;
 import com.deploypilot.provider.ProviderRegistry;
+import com.deploypilot.provider.model.MigrationInfo;
 import com.deploypilot.repoaccess.RepositoryRef;
 import com.deploypilot.repository.AutomationSecretRepository;
 import com.deploypilot.repository.ProjectRepository;
@@ -26,6 +28,7 @@ import org.springframework.stereotype.Service;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.*;
+import java.util.stream.Collectors;
 
 /**
  * Deterministically turns the latest blueprint plus the user's selections into a
@@ -43,17 +46,24 @@ public class ActionPlanService {
     private final ConnectionService connectionService;
     private final AutomationSecretRepository secretRepository;
     private final ProviderRegistry providers;
+    private final MigrationDiscoveryService migrationDiscoveryService;
+
+    // Backend-only DB variables filled from the Supabase connection details.
+    static final Set<String> DB_BACKEND_VARS = Set.of(
+        "DATABASE_URL", "JDBC_DATABASE_URL", "SUPABASE_SERVICE_ROLE_KEY", "DATABASE_PASSWORD");
 
     public ActionPlanService(ProjectRepository projectRepository,
                              DeploymentBlueprintService blueprintService,
                              ConnectionService connectionService,
                              AutomationSecretRepository secretRepository,
-                             ProviderRegistry providers) {
+                             ProviderRegistry providers,
+                             MigrationDiscoveryService migrationDiscoveryService) {
         this.projectRepository = projectRepository;
         this.blueprintService = blueprintService;
         this.connectionService = connectionService;
         this.secretRepository = secretRepository;
         this.providers = providers;
+        this.migrationDiscoveryService = migrationDiscoveryService;
     }
 
     public DeploymentActionPlan build(Long projectId, PlanRequest request) {
@@ -91,17 +101,10 @@ public class ActionPlanService {
         List<PlannedAction> actions = new ArrayList<>();
         int[] order = {0};
 
-        // 1. Database handoff (import-only in this stage).
+        // 1. Database — controlled Supabase automation, or manual import (default).
+        DbPlan dbPlan = new DbPlan(false, null);
         if (database != null) {
-            plan.setDatabase(buildDatabaseHandoff(bp, database, suppliedSecrets));
-            actions.add(action(order, "database.confirm", ActionType.READ_ONLY, "NONE", null,
-                database.getName(), "Confirm database connection",
-                "Verify the imported database connection is reachable. DeployPilot never creates, resets or deletes a database in this stage.",
-                null, false, false, true, false, null, List.of(), List.of()));
-            if (plan.getDatabase().isRequired() && !plan.getDatabase().isConnectionSupplied()) {
-                plan.getBlockers().add("A database is required but no connection has been supplied. "
-                    + "Add the database connection fields, then regenerate the plan.");
-            }
+            dbPlan = planDatabase(bp, database, request, connections, userId, projectId, plan, order, actions, suppliedSecrets);
         }
 
         // 2. Repository configuration PR (only if the blueprint proposes file changes).
@@ -122,7 +125,7 @@ public class ActionPlanService {
         }
 
         // Build env-var routing (safety: secrets never routed to the frontend host).
-        EnvRouting routing = routeEnvVars(bp, backend, frontend, suppliedSecrets, plan);
+        EnvRouting routing = routeEnvVars(bp, backend, frontend, suppliedSecrets, plan, dbPlan.supabaseActive());
 
         // 3. Backend service (Render).
         PlannedAction backendEnsure = null, backendDeploy = null;
@@ -147,9 +150,23 @@ public class ActionPlanService {
                 null, false, true, true, false, null, routing.backendEnvNames, List.of(backendEnsure.getId()));
             actions.add(backendEnv);
 
+            List<String> backendDeployDeps = new ArrayList<>(List.of(backendEnv.getId()));
+            // Backend database variables come from the prepared Supabase project (backend-only secrets).
+            if (dbPlan.supabaseActive() && !routing.dbBackendEnvNames.isEmpty()) {
+                List<String> dbDeps = new ArrayList<>(List.of(backendEnsure.getId()));
+                if (dbPlan.lastDbActionId() != null) dbDeps.add(dbPlan.lastDbActionId());
+                PlannedAction dbEnv = action(order, "backend.database-env", ActionType.UPDATE, backendProvider.name(), account,
+                    backend.getName(), "Set backend database variables",
+                    "Set the backend's database connection variables from the prepared Supabase project. These are "
+                        + "backend-only secrets and are never sent to the frontend.",
+                    null, false, true, true, false, null, routing.dbBackendEnvNames, dbDeps);
+                actions.add(dbEnv);
+                backendDeployDeps.add(dbEnv.getId());
+            }
+
             backendDeploy = action(order, "backend.deploy", ActionType.DEPLOY, backendProvider.name(), account,
                 backend.getName(), "Deploy backend", "Trigger a backend deployment and wait for it to go live, then capture its URL.",
-                null, false, false, true, false, null, List.of(), List.of(backendEnv.getId()));
+                null, false, false, true, false, null, List.of(), List.copyOf(backendDeployDeps));
             actions.add(backendDeploy);
         } else if (backend != null) {
             plan.getWarnings().add(backend.getSelectedPlatform() + " automation for the backend is not supported yet — "
@@ -206,7 +223,17 @@ public class ActionPlanService {
             actions.add(restart);
         }
 
-        // 6. Automatic Stage 3 verification.
+        // 6. Verify the database connection (Supabase automation only).
+        if (dbPlan.supabaseActive() && dbPlan.lastDbActionId() != null) {
+            List<String> deps = new ArrayList<>(List.of(dbPlan.lastDbActionId()));
+            if (backendDeploy != null) deps.add(backendDeploy.getId());
+            actions.add(action(order, "verify.database", ActionType.READ_ONLY, "NONE", null,
+                database != null ? database.getName() : "Database", "Verify database connection",
+                "Confirm the Supabase project is active and healthy and that the backend has its database configuration.",
+                null, false, false, true, false, null, List.of(), deps));
+        }
+
+        // 7. Automatic Stage 3 verification.
         if (backendDeploy != null || frontendDeploy != null) {
             List<String> deps = new ArrayList<>();
             if (frontendDeploy != null) deps.add(frontendDeploy.getId());
@@ -233,12 +260,13 @@ public class ActionPlanService {
         final List<EnvVarPlanItem> items = new ArrayList<>();
         final List<String> backendEnvNames = new ArrayList<>();
         final List<String> frontendEnvNames = new ArrayList<>();
+        final List<String> dbBackendEnvNames = new ArrayList<>();
         String backendCorsVar;
     }
 
     private EnvRouting routeEnvVars(BlueprintResult bp, BlueprintResult.Component backend,
                                     BlueprintResult.Component frontend, Set<String> suppliedSecrets,
-                                    DeploymentActionPlan plan) {
+                                    DeploymentActionPlan plan, boolean supabaseActive) {
         EnvRouting r = new EnvRouting();
         String backendId = backend != null ? backend.getId() : null;
         String frontendId = frontend != null ? frontend.getId() : null;
@@ -255,8 +283,18 @@ public class ActionPlanService {
             item.setGeneratable(m.isGeneratable());
             item.setSource(m.getValueSource());
 
+            String status = valueStatus(m, secret, suppliedSecrets);
             String destination;
-            if (toFrontend && secret) {
+            // Supabase automation supplies database variables from the prepared project.
+            if (supabaseActive && isDbBackendVar(m.getName())) {
+                destination = "Backend service (from Supabase)";
+                r.dbBackendEnvNames.add(m.getName());
+                status = "FROM_PREVIOUS_STEP";
+            } else if (supabaseActive && isSupabaseFrontendVar(m.getName()) && !secret) {
+                destination = "Frontend site (public Supabase value)";
+                r.frontendEnvNames.add(m.getName());
+                status = "FROM_PREVIOUS_STEP";
+            } else if (toFrontend && secret) {
                 // Safety: a secret must never be pushed to the frontend host.
                 destination = "Backend service (kept off the frontend)";
                 plan.getWarnings().add("Variable " + m.getName()
@@ -272,7 +310,7 @@ public class ActionPlanService {
                 destination = "Repository (.env.example)";
             }
             item.setDestination(destination);
-            item.setValueStatus(valueStatus(m, secret, suppliedSecrets));
+            item.setValueStatus(status);
             r.items.add(item);
 
             if (isCorsVar(m) && toBackend) r.backendCorsVar = m.getName();
@@ -283,6 +321,16 @@ public class ActionPlanService {
             }
         }
         return r;
+    }
+
+    private boolean isDbBackendVar(String name) {
+        return name != null && DB_BACKEND_VARS.contains(name.toUpperCase(Locale.ROOT));
+    }
+
+    private boolean isSupabaseFrontendVar(String name) {
+        if (name == null) return false;
+        String n = name.toUpperCase(Locale.ROOT);
+        return n.startsWith("VITE_SUPABASE_") || n.startsWith("NEXT_PUBLIC_SUPABASE_");
     }
 
     private String valueStatus(BlueprintResult.EnvVarMapping m, boolean secret, Set<String> suppliedSecrets) {
@@ -301,12 +349,124 @@ public class ActionPlanService {
 
     // ---------- database ----------
 
-    private DeploymentActionPlan.DatabaseHandoff buildDatabaseHandoff(BlueprintResult bp,
-            BlueprintResult.Component database, Set<String> suppliedSecrets) {
+    /** Result of planning the database part: whether Supabase automation is active and its final action id. */
+    private record DbPlan(boolean supabaseActive, String lastDbActionId) {}
+
+    private DbPlan planDatabase(BlueprintResult bp, BlueprintResult.Component database, PlanRequest request,
+                                Map<ProviderType, ProviderConnection> connections, Long userId, Long projectId,
+                                DeploymentActionPlan plan, int[] order, List<PlannedAction> actions, Set<String> suppliedSecrets) {
+        DatabaseChoice choice = DatabaseChoice.parse(request.getDatabaseChoice());
+        boolean supabaseConnected = connections.containsKey(ProviderType.SUPABASE);
+        AutomationMode mode = parseMode(request.getMode());
+        String platform = notBlank(database.getSelectedPlatform()) ? database.getSelectedPlatform() : database.getName();
+
         DeploymentActionPlan.DatabaseHandoff h = new DeploymentActionPlan.DatabaseHandoff();
         h.setRequired(true);
-        String platform = notBlank(database.getSelectedPlatform()) ? database.getSelectedPlatform() : database.getName();
         h.setDetectedProvider(platform);
+        h.setChoice(choice.name());
+        h.setSupabaseConnected(supabaseConnected);
+        h.setSupabaseOrgId(request.getSupabaseOrgId());
+        h.setSupabaseProjectRef(request.getSupabaseProjectRef());
+        h.setSupabaseProjectName(request.getSupabaseProjectName());
+        h.setSupabaseRegion(request.getSupabaseRegion());
+        h.setApplyMigrations(request.isApplyMigrations());
+        List<String> fields = dbFields(bp);
+        h.setRequiredFields(fields);
+        h.setConnectionSupplied(fields.stream().anyMatch(suppliedSecrets::contains));
+
+        boolean supabaseAutomation = choice != DatabaseChoice.MANUAL && supabaseConnected && mode == AutomationMode.DEPLOY_FOR_ME;
+
+        if (!supabaseAutomation) {
+            if (choice != DatabaseChoice.MANUAL && !supabaseConnected) {
+                plan.getBlockers().add("Connect your Supabase account to let DeployPilot prepare the database, or choose manual import.");
+            }
+            h.setInstructions("Create or open your " + platform + " database, copy the connection details and add them as "
+                + "deployment secrets. In manual mode DeployPilot tests connectivity only — it never creates, resets or deletes a database.");
+            plan.setDatabase(h);
+            actions.add(action(order, "database.confirm", ActionType.READ_ONLY, "NONE", null, database.getName(),
+                "Confirm database connection",
+                "Verify the imported database connection is reachable. In manual mode DeployPilot never creates, resets or deletes a database.",
+                null, false, false, true, false, null, List.of(), List.of()));
+            if (h.isRequired() && !h.isConnectionSupplied()) {
+                plan.getBlockers().add("A database is required but no connection has been supplied. "
+                    + "Add the connection fields (or choose Supabase automation), then regenerate the plan.");
+            }
+            return new DbPlan(false, null);
+        }
+
+        // ----- controlled Supabase automation -----
+        String account = label(connections, ProviderType.SUPABASE);
+        String lastDbActionId;
+        String refForMigrations = null;
+
+        if (choice == DatabaseChoice.CREATE_SUPABASE_PROJECT) {
+            if (!notBlank(request.getSupabaseOrgId())) plan.getBlockers().add("Select a Supabase organization to create the project in.");
+            if (!notBlank(request.getSupabaseProjectName())) plan.getBlockers().add("Choose a name for the new Supabase project.");
+            h.setInstructions("DeployPilot will create a new Supabase project on the free plan, wait until it is ready, "
+                + "then use its connection details. It never selects a paid plan.");
+            PlannedAction create = action(order, "database.create", ActionType.CREATE, "SUPABASE", account, database.getName(),
+                "Create Supabase project",
+                "Create a new Supabase project '" + safeName(request.getSupabaseProjectName()) + "' on the free plan.",
+                null, true, false, false, false, "Free plan (no cost). DeployPilot never selects a paid Supabase plan.", List.of(), List.of());
+            actions.add(create);
+            PlannedAction wait = action(order, "database.wait", ActionType.READ_ONLY, "SUPABASE", account, database.getName(),
+                "Wait for the database to be ready", "Wait until the new Supabase project is active and healthy.",
+                null, false, false, true, false, null, List.of(), List.of(create.getId()));
+            actions.add(wait);
+            lastDbActionId = wait.getId();
+        } else {
+            if (!notBlank(request.getSupabaseProjectRef())) plan.getBlockers().add("Select an existing Supabase project to use.");
+            refForMigrations = request.getSupabaseProjectRef();
+            h.setInstructions("DeployPilot will use your existing Supabase project and apply any approved, safe migrations.");
+            PlannedAction inspect = action(order, "database.inspect", ActionType.READ_ONLY, "SUPABASE", account, database.getName(),
+                "Inspect Supabase project", "Read the selected Supabase project's status and details (read-only).",
+                request.getSupabaseProjectRef(), false, false, true, false, null, List.of(), List.of());
+            actions.add(inspect);
+            lastDbActionId = inspect.getId();
+        }
+
+        if (request.isApplyMigrations()) {
+            List<MigrationInfo> migrations = discoverMigrations(bp, plan.getBranch(), projectId, refForMigrations);
+            migrations.forEach(mi -> h.getMigrations().add(new DeploymentActionPlan.DatabaseHandoff.MigrationView(
+                mi.name(), mi.checksum(), mi.order(), mi.previouslyApplied(), mi.destructive(), mi.safetyClassification(), mi.reason())));
+            boolean anyDestructive = migrations.stream().anyMatch(MigrationInfo::destructive);
+            boolean anyPending = migrations.stream().anyMatch(mi -> !mi.previouslyApplied() && !mi.destructive());
+            if (!migrations.isEmpty()) {
+                PlannedAction inspectMig = action(order, "database.migrations.inspect", ActionType.READ_ONLY, "NONE", null, database.getName(),
+                    "Inspect repository migrations",
+                    "Review " + migrations.size() + " repository-owned migration(s), their order and checksums.",
+                    null, false, false, true, false, null, List.of(), List.of(lastDbActionId));
+                actions.add(inspectMig);
+                lastDbActionId = inspectMig.getId();
+            }
+            if (anyDestructive) {
+                String names = migrations.stream().filter(MigrationInfo::destructive).map(MigrationInfo::name)
+                    .collect(Collectors.joining(", "));
+                plan.getBlockers().add("Potentially destructive migration(s) detected (" + names + "). DeployPilot will not "
+                    + "apply them automatically — review them with a database expert outside DeployPilot.");
+            } else if (anyPending) {
+                PlannedAction applyMig = action(order, "database.migrations.apply", ActionType.UPDATE, "SUPABASE", account, database.getName(),
+                    "Apply safe migrations",
+                    "Apply the safe, not-yet-applied repository migrations in order. Checksums prevent re-applying completed ones.",
+                    null, false, true, false, false, null, List.of(), List.of(lastDbActionId));
+                actions.add(applyMig);
+                lastDbActionId = applyMig.getId();
+            }
+        }
+
+        PlannedAction creds = action(order, "database.credentials", ActionType.READ_ONLY, "SUPABASE", account, database.getName(),
+            "Prepare database connection details",
+            "Read the Supabase connection details and prepare the backend database variables and the frontend public "
+                + "Supabase values. The service-role key and password stay backend-only and are never exposed.",
+            null, false, false, true, false, null, List.of(), List.of(lastDbActionId));
+        actions.add(creds);
+        lastDbActionId = creds.getId();
+
+        plan.setDatabase(h);
+        return new DbPlan(true, lastDbActionId);
+    }
+
+    private List<String> dbFields(BlueprintResult bp) {
         List<String> fields = new ArrayList<>();
         for (BlueprintResult.EnvVarMapping m : bp.getEnvironmentVariables()) {
             String n = m.getName() == null ? "" : m.getName().toUpperCase(Locale.ROOT);
@@ -315,13 +475,22 @@ public class ActionPlanService {
                 fields.add(m.getName());
             }
         }
-        if (fields.isEmpty()) fields = List.of("DATABASE_URL", "DATABASE_USERNAME", "DATABASE_PASSWORD");
-        h.setRequiredFields(fields);
-        h.setConnectionSupplied(fields.stream().anyMatch(suppliedSecrets::contains));
-        h.setInstructions("Create or open your " + platform + " database, copy the connection details and add them as "
-            + "deployment secrets. DeployPilot tests connectivity only — it never creates, resets or deletes a database "
-            + "in this stage.");
-        return h;
+        return fields.isEmpty() ? List.of("DATABASE_URL", "DATABASE_USERNAME", "DATABASE_PASSWORD") : fields;
+    }
+
+    private List<MigrationInfo> discoverMigrations(BlueprintResult bp, String branch, Long projectId, String supabaseRef) {
+        try {
+            RepositoryRef ref = RepositoryRef.parse(bp.getRepository());
+            String b = notBlank(branch) ? branch : "main";
+            return migrationDiscoveryService.discover(ref, b, projectId, supabaseRef);
+        } catch (Exception e) {
+            log.debug("Migration discovery skipped: {}", e.getMessage());
+            return List.of();
+        }
+    }
+
+    private String safeName(String name) {
+        return name == null ? "" : name.replaceAll("[^A-Za-z0-9 _.-]", "");
     }
 
     // ---------- helpers ----------
@@ -447,6 +616,17 @@ public class ActionPlanService {
         }
         for (EnvVarPlanItem e : plan.getEnvironmentVariables()) {
             sb.append("env=").append(e.getName()).append('|').append(e.getDestination()).append('\n');
+        }
+        // Bind the database choices and migration identities into the hash so any
+        // change (choice, org/project, region, migrations) requires re-confirmation.
+        DeploymentActionPlan.DatabaseHandoff db = plan.getDatabase();
+        if (db != null) {
+            sb.append("db=").append(nullSafe(db.getChoice())).append('|').append(nullSafe(db.getSupabaseOrgId()))
+              .append('|').append(nullSafe(db.getSupabaseProjectRef())).append('|').append(nullSafe(db.getSupabaseProjectName()))
+              .append('|').append(nullSafe(db.getSupabaseRegion())).append('|').append(db.isApplyMigrations()).append('\n');
+            for (DeploymentActionPlan.DatabaseHandoff.MigrationView mv : db.getMigrations()) {
+                sb.append("mig=").append(mv.name()).append('|').append(mv.checksum()).append('|').append(mv.destructive()).append('\n');
+            }
         }
         return sha256Hex(sb.toString());
     }
