@@ -1,5 +1,6 @@
 package com.deploypilot.security;
 
+import com.deploypilot.exception.ServiceUnavailableException;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -8,7 +9,8 @@ import static org.junit.jupiter.api.Assertions.*;
 class CredentialEncryptionServiceTest {
 
     private CredentialEncryptionService service(String key) {
-        CredentialEncryptionService s = new CredentialEncryptionService(key);
+        // Non-prod profile: a blank key falls back to the dev key so tests work.
+        CredentialEncryptionService s = new CredentialEncryptionService(key, "test");
         s.init();
         return s;
     }
@@ -72,5 +74,25 @@ class CredentialEncryptionServiceTest {
         // Blank config must still initialise (dev fallback), so local runs need no setup.
         CredentialEncryptionService s = service("");
         assertEquals("hello", s.decrypt(s.encrypt("hello")));
+    }
+
+    @Test
+    void productionWithoutKeyBootsButFailsClosed() {
+        // In prod without a strong key the service initialises (app still boots)
+        // but refuses to encrypt/decrypt so nothing is stored under the dev key.
+        CredentialEncryptionService s = new CredentialEncryptionService("", "prod");
+        s.init();
+        assertFalse(s.isSecurelyConfigured());
+        assertThrows(ServiceUnavailableException.class, () -> s.encrypt("token"));
+        assertThrows(ServiceUnavailableException.class, () -> s.decrypt("v1:whatever"));
+    }
+
+    @Test
+    void productionWithStrongKeyIsConfigured() {
+        CredentialEncryptionService s = new CredentialEncryptionService(
+            "a-strong-production-encryption-key-1234567890", "prod");
+        s.init();
+        assertTrue(s.isSecurelyConfigured());
+        assertEquals("v", s.decrypt(s.encrypt("v")));
     }
 }

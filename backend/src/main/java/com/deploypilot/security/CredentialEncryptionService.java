@@ -19,11 +19,12 @@ import java.util.Base64;
  * Symmetric authenticated encryption (AES-256-GCM) for provider credentials and
  * user-supplied deployment secrets held at rest.
  *
- * <p>The key comes from {@code DEPLOYPILOT_ENCRYPTION_KEY}. In production the
- * application refuses to start without a strong key (see
- * {@code ProductionSecretsValidator}); outside production a fixed development
- * key is derived so local runs and tests work without configuration — that
- * fallback is never reached in production.
+ * <p>The key comes from {@code DEPLOYPILOT_ENCRYPTION_KEY}. Outside production a
+ * fixed development key is derived so local runs and tests work without
+ * configuration. In production without a strong key the app still boots (so
+ * unrelated features keep working), but this service <em>fails closed</em>: any
+ * attempt to encrypt or decrypt is refused, so no credential is ever stored
+ * under the weak development key.
  *
  * <p>This class must never log plaintext or ciphertext material. Callers must
  * never log the values passed in or returned.
@@ -41,19 +42,45 @@ public class CredentialEncryptionService {
     public static final String DEV_FALLBACK_KEY = "deploypilot-dev-only-encryption-key-not-for-production";
 
     private final String configuredKey;
+    private final boolean prodProfile;
     private final SecureRandom random = new SecureRandom();
     private SecretKeySpec key;
+    // True in production without a strong key: the app boots but connection and
+    // secret operations are refused so nothing is encrypted under the dev key.
+    private boolean secureKeyMissing;
 
-    public CredentialEncryptionService(@Value("${deploypilot.encryption.key:}") String configuredKey) {
+    public CredentialEncryptionService(
+            @Value("${deploypilot.encryption.key:}") String configuredKey,
+            @Value("${spring.profiles.active:}") String activeProfiles) {
         this.configuredKey = configuredKey;
+        this.prodProfile = activeProfiles != null && activeProfiles.contains("prod");
     }
 
     @PostConstruct
     void init() {
-        String material = (configuredKey == null || configuredKey.isBlank()) ? DEV_FALLBACK_KEY : configuredKey;
+        boolean weak = configuredKey == null || configuredKey.isBlank() || DEV_FALLBACK_KEY.equals(configuredKey);
+        this.secureKeyMissing = prodProfile && weak;
+        String material = weak ? DEV_FALLBACK_KEY : configuredKey;
         this.key = new SecretKeySpec(deriveKeyBytes(material), "AES");
         // Deliberately never logs the key or any hash of it.
-        log.info("Credential encryption initialised (AES-256-GCM)");
+        if (secureKeyMissing) {
+            log.warn("DEPLOYPILOT_ENCRYPTION_KEY is not configured for production. Provider connections and stored "
+                + "deployment secrets are disabled until a strong key is set; all other features work normally.");
+        } else {
+            log.info("Credential encryption initialised (AES-256-GCM)");
+        }
+    }
+
+    /** Whether a strong key is configured, so connections and secrets can be used. */
+    public boolean isSecurelyConfigured() {
+        return !secureKeyMissing;
+    }
+
+    private void ensureConfigured() {
+        if (secureKeyMissing) {
+            throw new com.deploypilot.exception.ServiceUnavailableException(
+                "Provider connections and deployment secrets are disabled until DEPLOYPILOT_ENCRYPTION_KEY is set on the server.");
+        }
     }
 
     /**
@@ -80,6 +107,7 @@ public class CredentialEncryptionService {
 
     /** Encrypts UTF-8 plaintext, returning {@code v1:base64(iv||ciphertext||tag)}. */
     public String encrypt(String plaintext) {
+        ensureConfigured();
         if (plaintext == null) {
             throw new IllegalArgumentException("Cannot encrypt null");
         }
@@ -101,6 +129,7 @@ public class CredentialEncryptionService {
 
     /** Reverses {@link #encrypt}. Throws if the ciphertext is malformed or the tag fails. */
     public String decrypt(String token) {
+        ensureConfigured();
         if (token == null || !token.startsWith(VERSION + ":")) {
             throw new IllegalArgumentException("Unrecognised ciphertext format");
         }
