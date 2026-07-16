@@ -40,7 +40,7 @@ class ProviderAdapterTest {
     void setUp() throws IOException {
         mock = new MockProviderServer();
         ProviderApiClient http = new ProviderApiClient();
-        ProviderProperties props = new ProviderProperties(mock.githubBaseUrl(), mock.netlifyBaseUrl(), mock.renderBaseUrl());
+        ProviderProperties props = new ProviderProperties(mock.githubBaseUrl(), mock.netlifyBaseUrl(), mock.renderBaseUrl(), mock.supabaseBaseUrl());
         LogSanitizer sanitizer = new LogSanitizer();
         github = new GitHubGitProvider(http, props);
         netlify = new NetlifyHostingProvider(http, props, sanitizer);

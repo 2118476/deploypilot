@@ -23,4 +23,14 @@ public class ProviderException extends RuntimeException {
     public static class NotFound extends ProviderException {
         public NotFound(String message) { super(message); }
     }
+
+    /** The provider requires a paid plan / billing to fulfil the request. */
+    public static class BillingRequired extends ProviderException {
+        public BillingRequired(String message) { super(message); }
+    }
+
+    /** The provider is rate-limiting; the caller may retry with backoff. */
+    public static class RateLimited extends ProviderException {
+        public RateLimited(String message) { super(message); }
+    }
 }

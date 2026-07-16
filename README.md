@@ -327,6 +327,53 @@ disabled (fail-closed) so nothing is ever stored under a weak key. `render.yaml`
 (`generateValue`) for blueprint-managed Render services; otherwise set it in the service's environment
 (e.g. `openssl rand -base64 32`).
 
+## Project Copilot, Intelligent Dashboard & Controlled Supabase Automation (Stage 5)
+
+Stage 5 adds a persistent, project-aware **Copilot**, a deterministic **intelligent dashboard**, and **controlled
+Supabase database automation** — all reusing the Stage 4 ownership, encryption, plan-hash, confirmation, sanitization
+and verification systems.
+
+### Project Copilot
+- Persistent, per-project conversations (bound to `userId` + `projectId`, ownership enforced on every read/create/clear).
+- Answers from **real records** first (deterministic), with Gemini adding a plain-language explanation when available.
+- `ProjectContextService` assembles a **bounded, sanitized** snapshot (analysis, blueprint, connections, latest run and
+  step, sanitized logs, outputs, verification, missing secret names, relevant filenames). `SecretRedactionUtil` +
+  `LogSanitizer` run before the AI request and again before persistence. It never includes credentials, secret values,
+  JWTs, database passwords, real `.env` contents or unredacted logs.
+- Never claims an action succeeded without an `AutomationRun` / `ExecutionStep` / provider result / `VerificationRun` to
+  prove it. Bounded history with a clear-conversation action (clearing never touches automation/verification history).
+- **Safe action requests:** "Deploy this project" or "Retry the failed step" produce a typed *proposed action* and a
+  deterministic plan via `ActionPlanService`, then send you to the existing review-and-confirm flow. The AI never
+  generates or approves a confirmation nonce, never executes anything, and its free-form output is never trusted as JSON.
+
+### Intelligent dashboard
+- `ProjectStatusService` computes a deterministic status (`NOT_ANALYSED` … `HEALTHY`/`DEGRADED`/`FAILED`) from stored
+  records only — it works with Gemini unavailable. The dashboard shows the status, "what DeployPilot is doing now", a
+  completed-milestone timeline, "what you need to do" cards, one recommended next action, deployment URLs, verification
+  result, recent activity, and the compact Copilot panel. No fake percentage progress.
+
+### Controlled Supabase automation
+- Supabase is a **`DatabaseProvider`** (not a `HostingProvider`). Connect a Supabase **personal access token**; it is
+  validated against the Management API, encrypted at rest and never returned or logged.
+- With a database component, a Supabase connection, an explicit choice (existing/new project) and Deploy-for-me mode,
+  the plan gains `database.inspect|create|wait|migrations.inspect|migrations.apply|credentials`, `backend.database-env`
+  and `verify.database` steps — each classified and shown before confirmation, with the database choices bound into the
+  plan hash. **Never selects a paid plan**; if free creation is unavailable it **pauses and explains** rather than
+  pretending success. Idempotent (reuses a created project on retry; migration checksums prevent re-applying).
+- **Migration safety:** only repository-owned migrations (`supabase/migrations`, `database/migrations`, `db/migration`,
+  …) are considered — never AI-generated SQL. Filenames, order, checksums, applied-state and safety classification are
+  shown; potentially destructive statements (`DROP …`, `TRUNCATE`, destructive `ALTER`, unrestricted `DELETE`) are
+  **blocked** for manual expert review. Applied checksums are recorded in `applied_database_migrations`.
+- **Variable routing:** `DATABASE_URL`, `JDBC_DATABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` and the DB password stay
+  backend-only; only public values (`VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`, `NEXT_PUBLIC_SUPABASE_*`) may reach
+  the frontend host. Passwords and service-role keys never enter run outputs, logs, AI context or audit events.
+
+### External Supabase setup required
+- Each user creates a **Supabase personal access token** (Supabase → Account → Access Tokens) and connects it on the
+  **Connections** page. Minimum use: read organizations/projects, create a free project, read API keys, run approved
+  migrations. No server-side Supabase environment variable is required. Supabase OAuth is intentionally left as a future
+  upgrade. `GEMINI_API_KEY` is optional — without it the Copilot and dashboard use deterministic answers.
+
 ## Roadmap
 
 1. ~~Read-only repository analysis~~ ✓
@@ -334,6 +381,8 @@ disabled (fail-closed) so nothing is ever stored under a weak key. `render.yaml`
 3. ~~Live deployment verification~~ ✓ — checks DNS, health, CORS, version and PWA/cache against the blueprint
 4. ~~Controlled deployment automation~~ ✓ — per-user encrypted connections, a classified action plan, short-lived
    confirmation, and idempotent GitHub/Netlify/Render deployment with automatic verification (never without consent)
+5. ~~Project Copilot, intelligent dashboard & controlled Supabase automation~~ ✓ — a persistent evidence-based Copilot,
+   a deterministic status dashboard, and confirmed, idempotent Supabase database preparation with migration safety
 
 ## License
 

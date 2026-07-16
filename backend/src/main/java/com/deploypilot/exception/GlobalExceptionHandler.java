@@ -93,6 +93,18 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(HttpStatus.NOT_FOUND).body(ApiResponse.error(e.getMessage()));
     }
 
+    @ExceptionHandler(com.deploypilot.provider.ProviderException.BillingRequired.class)
+    public ResponseEntity<ApiResponse<Void>> handleProviderBilling(
+            com.deploypilot.provider.ProviderException.BillingRequired e) {
+        return ResponseEntity.status(HttpStatus.PAYMENT_REQUIRED).body(ApiResponse.error(e.getMessage()));
+    }
+
+    @ExceptionHandler(com.deploypilot.provider.ProviderException.RateLimited.class)
+    public ResponseEntity<ApiResponse<Void>> handleProviderRateLimited(
+            com.deploypilot.provider.ProviderException.RateLimited e) {
+        return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS).body(ApiResponse.error(e.getMessage()));
+    }
+
     @ExceptionHandler(com.deploypilot.provider.ProviderException.class)
     public ResponseEntity<ApiResponse<Void>> handleProvider(com.deploypilot.provider.ProviderException e) {
         return ResponseEntity.status(HttpStatus.BAD_GATEWAY).body(ApiResponse.error(e.getMessage()));

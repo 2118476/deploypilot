@@ -1,16 +1,22 @@
+import { useState, useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { dashboardApi, projectApi } from '@/lib/api';
 import ProjectCard from '@/components/ProjectCard';
-import ProgressBar from '@/components/ProgressBar';
+import ProjectStatusPanel from '@/components/ProjectStatusPanel';
+import CopilotPanel from '@/components/CopilotPanel';
 import {
-  FolderGit2, CheckCircle, Bookmark, ArrowRight, Plus,
-  Terminal, BookOpen, Wrench, ShieldCheck
+  FolderGit2, Bookmark, Plus, Terminal, BookOpen, Wrench, ShieldCheck,
 } from 'lucide-react';
 
 export default function DashboardPage() {
   const { data: dash } = useQuery({ queryKey: ['dashboard'], queryFn: () => dashboardApi.get() });
   const { data: projects } = useQuery({ queryKey: ['projects'], queryFn: () => projectApi.list() });
+
+  const [selectedId, setSelectedId] = useState<number | null>(null);
+  useEffect(() => {
+    if (projects && projects.length > 0 && selectedId === null) setSelectedId(projects[0].id);
+  }, [projects, selectedId]);
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 py-8">
@@ -18,20 +24,18 @@ export default function DashboardPage() {
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-8">
         <div>
           <h1 className="text-2xl font-bold">Dashboard</h1>
-          <p className="text-slate-500 dark:text-slate-400 mt-1">Track your deployments and next steps</p>
+          <p className="text-slate-500 dark:text-slate-400 mt-1">Your projects, live status and Copilot</p>
         </div>
         <Link to="/projects/new" className="btn-primary shrink-0">
           <Plus className="w-4 h-4" />New Project
         </Link>
       </div>
 
-      {/* Stats */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
+      {/* Stats (no fake progress percentage) */}
+      <div className="grid grid-cols-2 gap-4 mb-8 max-w-md">
         {[
           { icon: FolderGit2, label: 'Projects', value: dash?.totalProjects ?? 0, color: 'text-primary-600' },
-          { icon: CheckCircle, label: 'Steps Done', value: `${dash?.completedSteps ?? 0}/${dash?.totalSteps ?? 0}`, color: 'text-green-600' },
           { icon: Bookmark, label: 'Bookmarks', value: dash?.bookmarkCount ?? 0, color: 'text-amber-600' },
-          { icon: CheckCircle, label: 'Progress', value: dash && dash.totalSteps > 0 ? `${Math.round((dash.completedSteps / dash.totalSteps) * 100)}%` : '0%', color: 'text-purple-600' },
         ].map((s) => (
           <div key={s.label} className="card p-4">
             <div className="flex items-center gap-3">
@@ -45,50 +49,53 @@ export default function DashboardPage() {
         ))}
       </div>
 
-      {/* Next Step CTA */}
-      {dash?.nextStepTitle && (
-        <div className="bg-primary-600 text-white rounded-xl p-6 mb-8">
-          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-            <div>
-              <p className="text-primary-200 text-sm font-medium mb-1">YOUR NEXT STEP</p>
-              <h2 className="text-xl font-bold">{dash.nextStepTitle}</h2>
-              <p className="text-primary-200 text-sm mt-1">{dash.nextStepAction}</p>
-            </div>
-            {projects && projects.length > 0 && (
-              <Link to={`/projects/${projects[0].id}/plan`}
-                className="btn bg-white text-primary-600 hover:bg-primary-50 shrink-0">
-                Show My Next Step <ArrowRight className="w-4 h-4" />
-              </Link>
+      {/* Intelligent status + Copilot for the selected project */}
+      {projects && projects.length > 0 && selectedId !== null ? (
+        <div className="mb-10">
+          <div className="flex items-center justify-between mb-4 gap-4">
+            <h2 className="text-lg font-semibold">Project status</h2>
+            {projects.length > 1 && (
+              <select
+                value={selectedId}
+                onChange={(e) => setSelectedId(Number(e.target.value))}
+                className="input max-w-xs"
+                aria-label="Select project"
+              >
+                {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+              </select>
             )}
           </div>
-          {dash.totalSteps > 0 && (
-            <div className="mt-4">
-              <ProgressBar current={dash.completedSteps} total={dash.totalSteps} />
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            <div className="lg:col-span-2">
+              <ProjectStatusPanel projectId={selectedId} />
             </div>
-          )}
+            <div className="lg:col-span-1">
+              <CopilotPanel projectId={selectedId} />
+            </div>
+          </div>
+        </div>
+      ) : (
+        <div className="card p-8 text-center mb-10">
+          <FolderGit2 className="w-12 h-12 text-slate-300 mx-auto mb-3" />
+          <p className="text-slate-500 mb-4">No projects yet. Create your first project to get a deployment plan.</p>
+          <Link to="/projects/new" className="btn-primary">Create Project</Link>
         </div>
       )}
 
-      {/* Projects */}
-      <div className="mb-8">
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="text-lg font-semibold">Your Projects</h2>
-          <Link to="/projects" className="text-sm text-primary-600 hover:underline">View all</Link>
-        </div>
-        {projects && projects.length > 0 ? (
+      {/* Projects grid (existing access preserved) */}
+      {projects && projects.length > 0 && (
+        <div className="mb-8">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-lg font-semibold">Your Projects</h2>
+            <Link to="/projects" className="text-sm text-primary-600 hover:underline">View all</Link>
+          </div>
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             {projects.slice(0, 6).map((p) => (
               <ProjectCard key={p.id} project={p} />
             ))}
           </div>
-        ) : (
-          <div className="card p-8 text-center">
-            <FolderGit2 className="w-12 h-12 text-slate-300 mx-auto mb-3" />
-            <p className="text-slate-500 mb-4">No projects yet. Create your first project to get a deployment plan.</p>
-            <Link to="/projects/new" className="btn-primary">Create Project</Link>
-          </div>
-        )}
-      </div>
+        </div>
+      )}
 
       {/* Quick Links */}
       <div>

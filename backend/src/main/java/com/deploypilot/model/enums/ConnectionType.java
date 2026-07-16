@@ -10,5 +10,9 @@ public enum ConnectionType {
     GITHUB_PAT,
     NETLIFY_OAUTH,
     NETLIFY_PAT,
-    RENDER_API_KEY
+    RENDER_API_KEY,
+    // Supabase Management API personal access token. OAuth is a future upgrade,
+    // kept in the model so connections stay forward-compatible.
+    SUPABASE_PAT,
+    SUPABASE_OAUTH
 }
