@@ -321,8 +321,11 @@ configuration, outside this codebase):
 - **Netlify OAuth** (instead of a PAT): register an OAuth application with the callback URL
   `https://<your-frontend>/connections` and provide its client id/secret to the backend.
 
-The only **required** new backend environment variable is `DEPLOYPILOT_ENCRYPTION_KEY` (see `.env.example`); production
-refuses to start without a strong value.
+The one new backend environment variable is `DEPLOYPILOT_ENCRYPTION_KEY` (see `.env.example`). It is required to **use**
+connections and automation: without a strong value the app still runs, but connecting providers and storing secrets are
+disabled (fail-closed) so nothing is ever stored under a weak key. `render.yaml` provisions it automatically
+(`generateValue`) for blueprint-managed Render services; otherwise set it in the service's environment
+(e.g. `openssl rand -base64 32`).
 
 ## Roadmap
 
