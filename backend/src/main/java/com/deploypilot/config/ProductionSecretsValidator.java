@@ -16,9 +16,13 @@ public class ProductionSecretsValidator {
 
     static final String DEV_DEFAULT_JWT_SECRET = "default-local-jwt-secret-change-in-production";
     static final int MIN_JWT_SECRET_LENGTH = 32;
+    static final int MIN_ENCRYPTION_KEY_LENGTH = 32;
 
     @Value("${deploypilot.jwt.secret:}")
     private String jwtSecret;
+
+    @Value("${deploypilot.encryption.key:}")
+    private String encryptionKey;
 
     @PostConstruct
     public void validate() {
@@ -34,6 +38,22 @@ public class ProductionSecretsValidator {
             throw new IllegalStateException(
                 "JWT_SECRET is shorter than " + MIN_JWT_SECRET_LENGTH
                     + " characters. Use a longer random secret.");
+        }
+        // Provider credentials are stored encrypted; production must supply a key.
+        if (encryptionKey == null || encryptionKey.isBlank()) {
+            throw new IllegalStateException(
+                "DEPLOYPILOT_ENCRYPTION_KEY is not set. Production refuses to start without a "
+                    + "credential-encryption key. Generate one with, e.g., "
+                    + "`openssl rand -base64 32`.");
+        }
+        if (encryptionKey.equals(com.deploypilot.security.CredentialEncryptionService.DEV_FALLBACK_KEY)) {
+            throw new IllegalStateException(
+                "DEPLOYPILOT_ENCRYPTION_KEY is still the development default. Set a unique key for production.");
+        }
+        if (encryptionKey.length() < MIN_ENCRYPTION_KEY_LENGTH) {
+            throw new IllegalStateException(
+                "DEPLOYPILOT_ENCRYPTION_KEY is shorter than " + MIN_ENCRYPTION_KEY_LENGTH
+                    + " characters. Use a longer random key (e.g. `openssl rand -base64 32`).");
         }
     }
 }

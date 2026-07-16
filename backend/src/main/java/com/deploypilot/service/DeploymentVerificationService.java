@@ -71,6 +71,19 @@ public class DeploymentVerificationService {
     }
 
     public VerificationRunResponse start(Long projectId, StartVerificationRequest request) {
+        return start(projectId, request, true);
+    }
+
+    /**
+     * Automation-initiated verification (run automatically after a deployment).
+     * Skips the interactive rate limit and duplicate guard, which exist to stop
+     * users spamming the form, not the server's own post-deploy check.
+     */
+    public VerificationRunResponse startForAutomation(Long projectId, StartVerificationRequest request) {
+        return start(projectId, request, false);
+    }
+
+    private VerificationRunResponse start(Long projectId, StartVerificationRequest request, boolean interactive) {
         Long userId = requireOwnedProject(projectId).getUserId();
 
         boolean hasFrontend = notBlank(request.getFrontendUrl());
@@ -82,14 +95,16 @@ public class DeploymentVerificationService {
         if (hasFrontend) urlValidator.validate(request.getFrontendUrl().trim(), request.isAllowInsecureLocal());
         if (hasBackend) urlValidator.validate(request.getBackendUrl().trim(), request.isAllowInsecureLocal());
 
-        if (runRepository.existsByProjectIdAndOverallStatus(projectId, VerificationStatus.RUNNING)) {
-            throw new ConflictException("A verification is already running for this project. Wait for it to finish.");
+        if (interactive) {
+            if (runRepository.existsByProjectIdAndOverallStatus(projectId, VerificationStatus.RUNNING)) {
+                throw new ConflictException("A verification is already running for this project. Wait for it to finish.");
+            }
+            Instant last = lastStartByProject.get(projectId);
+            if (last != null && Instant.now().isBefore(last.plusSeconds(MIN_SECONDS_BETWEEN_RUNS))) {
+                throw new ConflictException("Please wait a few seconds between verification runs.");
+            }
+            lastStartByProject.put(projectId, Instant.now());
         }
-        Instant last = lastStartByProject.get(projectId);
-        if (last != null && Instant.now().isBefore(last.plusSeconds(MIN_SECONDS_BETWEEN_RUNS))) {
-            throw new ConflictException("Please wait a few seconds between verification runs.");
-        }
-        lastStartByProject.put(projectId, Instant.now());
 
         // blueprint context (optional — verification works without a blueprint)
         Long blueprintId = null;

@@ -4,7 +4,7 @@ import { useAuth } from '@/hooks/useAuth';
 import { useTheme } from '@/hooks/useTheme';
 import {
   Rocket, Sun, Moon, Monitor, Menu, X, LogOut,
-  LayoutDashboard, FolderGit2, Terminal, BookOpen, Wrench, ShieldCheck
+  LayoutDashboard, FolderGit2, Terminal, BookOpen, Wrench, ShieldCheck, Plug
 } from 'lucide-react';
 
 export default function Navbar() {
@@ -20,6 +20,7 @@ export default function Navbar() {
     { to: '/git-commands', label: 'Git', icon: Terminal },
     { to: '/guides', label: 'Guides', icon: BookOpen },
     { to: '/troubleshoot', label: 'Fix', icon: Wrench },
+    { to: '/connections', label: 'Connections', icon: Plug },
     { to: '/security', label: 'Security', icon: ShieldCheck },
   ] : [];
 

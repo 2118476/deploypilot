@@ -7,7 +7,7 @@ import type { ApiResponse, BlueprintComponent, BlueprintEnvVar, BlueprintFilePre
 import {
   ShieldCheck, RefreshCw, AlertTriangle, AlertOctagon, Info, Loader2, ArrowLeft,
   Copy, Download, Check, ChevronDown, ChevronUp, Layers, Link2, KeyRound, ListOrdered,
-  FileCode, Wand2, ScanSearch
+  FileCode, Wand2, ScanSearch, Rocket
 } from 'lucide-react';
 
 const CONFIDENCE_STYLES: Record<string, string> = {
@@ -86,7 +86,10 @@ export default function DeploymentBlueprintPage() {
           Deployment Blueprint{project ? ` — ${project.name}` : ''}
         </h1>
         <div className="flex flex-wrap gap-2">
-          <Link to={`/projects/${projectId}/verify`} className="btn-primary text-sm inline-flex items-center gap-2">
+          <Link to={`/projects/${projectId}/automate`} className="btn-primary text-sm inline-flex items-center gap-2">
+            <Rocket className="w-4 h-4" /> Automate deployment
+          </Link>
+          <Link to={`/projects/${projectId}/verify`} className="btn-secondary text-sm inline-flex items-center gap-2">
             <ShieldCheck className="w-4 h-4" /> Verify deployment
           </Link>
           {blueprint && (

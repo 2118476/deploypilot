@@ -241,12 +241,96 @@ GET/HEAD/OPTIONS, no credentials in URLs, and localhost / loopback / private / l
 are blocked — including on redirect hops. Connect/read/total timeouts, response-size caps, no binary downloads, and
 DeployPilot never forwards its own auth headers. Verification only runs against URLs on your own projects.
 
+## Controlled Deployment Automation (Stage 4)
+
+After you have a blueprint, open a project → **Automate deployment**. DeployPilot can connect to your own GitHub,
+Netlify and Render accounts, turn the blueprint into an **exact, classified action plan**, ask for explicit confirmation
+and then perform only the actions you approved — always showing what it intends to change before anything happens.
+
+### Connections (per user, encrypted)
+
+Each user connects their own accounts on the **Connections** page — DeployPilot no longer relies on one server-wide
+GitHub token. Provider tokens are validated against the provider, encrypted at rest (AES-256-GCM) and **never returned
+to the browser or written to logs**. You can disconnect at any time, and connection status and granted permissions are
+shown.
+
+| Provider | Credential | Minimum permissions |
+|---|---|---|
+| GitHub | Fine-grained personal access token (or a GitHub App installation token) | Contents: Read and write · Pull requests: Read and write · Metadata: Read |
+| Netlify | Personal access token (or OAuth token) | Manage sites, builds and environment variables |
+| Render | API key | Manage web services, environment variables and deploys |
+
+### Three modes
+
+1. **Guide Me** — explains every step; you perform provider actions manually.
+2. **Prepare for Me** — generates configuration, variable mappings and the action plan; changes nothing externally.
+3. **Deploy for Me** — performs only the actions you explicitly confirm.
+
+The default performs no external changes automatically.
+
+### The action plan
+
+Generated deterministically from the latest analysis, blueprint and verification. Before anything runs it shows the
+repository and branch, the components being deployed, the provider and account, which resources are **created** vs
+**changed**, build/start/publish settings, environment-variable **names and destinations** (secret values masked),
+the deployment order, possible costs, actions that require a repository change, and which actions are reversible.
+Every action is classified `READ_ONLY`, `CREATE`, `UPDATE`, `DEPLOY`, `RESTART` or `DESTRUCTIVE` (no destructive
+actions are generated in this stage).
+
+### Confirmation and safety
+
+Execution requires a **short-lived, single-use confirmation** bound to the user, project, provider accounts, the exact
+plan hash and the repository/commit. It cannot be replayed, expires quickly, and if the plan changes after you confirm,
+you must confirm again. Execution is **idempotent** (retry from a failed step without recreating resources), never
+creates duplicate services, **never auto-selects a paid plan**, never deletes provider resources, never overwrites an
+unrelated service, and **never commits to or force-pushes `main`** — configuration files go through a pull request.
+Secret values never appear in logs, errors or the ownership-protected audit record.
+
+### What it automates (after confirmation)
+
+- **GitHub** — read the repo, check the latest commit, prepare deployment files, show diffs, create a dedicated branch,
+  commit generated config (`netlify.toml`, `render.yaml`, `Dockerfile`, …) and open a pull request. Never commits to
+  `main`; opens no PR when nothing changed.
+- **Render** — reuse or create a Web Service on the free plan, connect the repo, set branch/root/runtime and build/start
+  commands and health-check path, set backend variables, deploy, monitor, read sanitised logs and capture the backend URL.
+- **Netlify** — reuse or create a site on the free plan, connect the repo, set branch/base/build/publish, set only
+  frontend-safe variables, deploy, monitor, read sanitised logs and capture the production URL.
+- **Dependency-aware execution** — confirm the database, configure and deploy the backend, capture its URL, set the
+  frontend API URL, deploy the frontend, capture its URL, set the backend CORS/frontend-origin variable, restart the
+  backend, then **run Stage 3 verification automatically**. It stops on an important failure and never claims success
+  unless verification supports it.
+- **Database handoff** — uses the blueprint to decide whether a database is required. In this stage DeployPilot imports
+  existing connection details securely (encrypted), shows exact instructions for Supabase / Render PostgreSQL, tests
+  only safe connectivity, and **pauses to ask for the connection fields** rather than pretending a database was created.
+
+### Secrets
+
+Application secrets such as JWT keys are generated with a cryptographically secure generator. DeployPilot never
+fabricates provider or database credentials — you supply provider-issued keys, which are stored encrypted only while
+needed, masked in the interface, never returned after saving, and replaceable/removable.
+
+### External setup required from the owner
+
+The provider **token/API-key** path above works with no external app registration — each user creates a token in their
+own provider settings. Two optional upgrades require registering an application on a real account (external
+configuration, outside this codebase):
+
+- **GitHub App** (instead of a fine-grained PAT): register an App and set its callback URL to
+  `https://<your-frontend>/connections`, request the minimum permissions (Contents: read/write, Pull requests:
+  read/write, Metadata: read), and provide the App's client id/secret and private key as backend environment variables.
+- **Netlify OAuth** (instead of a PAT): register an OAuth application with the callback URL
+  `https://<your-frontend>/connections` and provide its client id/secret to the backend.
+
+The only **required** new backend environment variable is `DEPLOYPILOT_ENCRYPTION_KEY` (see `.env.example`); production
+refuses to start without a strong value.
+
 ## Roadmap
 
 1. ~~Read-only repository analysis~~ ✓
 2. ~~Deployment blueprint~~ ✓
 3. ~~Live deployment verification~~ ✓ — checks DNS, health, CORS, version and PWA/cache against the blueprint
-4. **Later — assisted automation**: after explicit user confirmation, automate deployment steps through GitHub, Netlify and Render APIs (never without consent)
+4. ~~Controlled deployment automation~~ ✓ — per-user encrypted connections, a classified action plan, short-lived
+   confirmation, and idempotent GitHub/Netlify/Render deployment with automatic verification (never without consent)
 
 ## License
 
