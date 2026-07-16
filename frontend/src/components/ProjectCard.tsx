@@ -2,7 +2,7 @@ import { Link } from 'react-router-dom';
 import type { ProjectSummary } from '@/types';
 import StatusBadge from './StatusBadge';
 import ProgressBar from './ProgressBar';
-import { ChevronRight, FolderGit2, ScanSearch, DraftingCompass } from 'lucide-react';
+import { ChevronRight, FolderGit2, ScanSearch, DraftingCompass, ShieldCheck } from 'lucide-react';
 
 interface Props {
   project: ProjectSummary;
@@ -51,6 +51,11 @@ export default function ProjectCard({ project }: Props) {
           className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-500 hover:text-primary-600 transition-colors">
           <DraftingCompass className="w-3.5 h-3.5" />
           Deployment blueprint
+        </Link>
+        <Link to={`/projects/${project.id}/verify`}
+          className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-500 hover:text-primary-600 transition-colors">
+          <ShieldCheck className="w-3.5 h-3.5" />
+          Verify deployment
         </Link>
       </div>
     </div>

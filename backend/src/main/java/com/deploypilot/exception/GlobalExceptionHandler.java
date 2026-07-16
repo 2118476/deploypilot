@@ -47,6 +47,11 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(ApiResponse.error(e.getMessage()));
     }
 
+    @ExceptionHandler(com.deploypilot.verify.SafeUrlException.class)
+    public ResponseEntity<ApiResponse<Void>> handleSafeUrl(com.deploypilot.verify.SafeUrlException e) {
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(ApiResponse.error(e.getMessage()));
+    }
+
     @ExceptionHandler(RepositoryAccessException.NotFound.class)
     public ResponseEntity<ApiResponse<Void>> handleRepoNotFound(RepositoryAccessException.NotFound e) {
         return ResponseEntity.status(HttpStatus.NOT_FOUND).body(ApiResponse.error(e.getMessage()));
