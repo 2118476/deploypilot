@@ -74,6 +74,25 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(HttpStatus.BAD_GATEWAY).body(ApiResponse.error(e.getMessage()));
     }
 
+    // A rejected provider token is the user's input problem (400), not a
+    // DeployPilot auth problem (401 would log them out).
+    @ExceptionHandler(com.deploypilot.provider.ProviderException.BadCredentials.class)
+    public ResponseEntity<ApiResponse<Void>> handleProviderBadCredentials(
+            com.deploypilot.provider.ProviderException.BadCredentials e) {
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(ApiResponse.error(e.getMessage()));
+    }
+
+    @ExceptionHandler(com.deploypilot.provider.ProviderException.NotFound.class)
+    public ResponseEntity<ApiResponse<Void>> handleProviderNotFound(
+            com.deploypilot.provider.ProviderException.NotFound e) {
+        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(ApiResponse.error(e.getMessage()));
+    }
+
+    @ExceptionHandler(com.deploypilot.provider.ProviderException.class)
+    public ResponseEntity<ApiResponse<Void>> handleProvider(com.deploypilot.provider.ProviderException e) {
+        return ResponseEntity.status(HttpStatus.BAD_GATEWAY).body(ApiResponse.error(e.getMessage()));
+    }
+
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ApiResponse<Void>> handleGeneric(Exception e) {
         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)

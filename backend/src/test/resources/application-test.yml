@@ -16,7 +16,16 @@ spring:
 deploypilot:
   jwt:
     secret: test-only-jwt-secret-0123456789-0123456789-0123456789
+  encryption:
+    key: test-only-encryption-key-0123456789-0123456789
   repo-access:
     mode: fixture
   cors:
     allowed-origins: http://localhost:5173
+  automation:
+    execution-enabled: true
+    confirmation-ttl-seconds: 600
+    # Fast polling and loopback verification so tests never wait on real providers.
+    poll-interval-ms: 20
+    poll-max-attempts: 50
+    verify-allow-local: true

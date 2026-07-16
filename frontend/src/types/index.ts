@@ -408,3 +408,143 @@ export interface AssistResponse {
   aiAvailable: boolean;
   answer: string;
 }
+
+// ==================== Stage 4: Controlled Deployment Automation ====================
+
+export type ProviderName = 'GITHUB' | 'NETLIFY' | 'RENDER';
+
+export interface ProviderConnection {
+  provider: ProviderName;
+  connected: boolean;
+  connectionType?: string;
+  accountLabel?: string;
+  scopes?: string;
+  status: string;
+  lastError?: string;
+  connectedAt?: string;
+  lastUsedAt?: string;
+}
+
+export interface RepositorySummary {
+  fullName: string;
+  defaultBranch: string;
+  privateRepo: boolean;
+  htmlUrl?: string;
+}
+
+export interface HostingSite {
+  id: string;
+  name: string;
+  url?: string;
+  linkedRepo?: string;
+}
+
+export interface SecretView {
+  name: string;
+  destination?: string;
+  hasValue: boolean;
+  masked: string;
+  updatedAt?: string;
+}
+
+export type ActionType = 'READ_ONLY' | 'CREATE' | 'UPDATE' | 'DEPLOY' | 'RESTART' | 'DESTRUCTIVE';
+
+export interface PlannedAction {
+  id: string;
+  order: number;
+  type: ActionType;
+  provider: string;
+  account?: string;
+  component?: string;
+  title: string;
+  description: string;
+  targetResource?: string;
+  createsNewResource: boolean;
+  changesExisting: boolean;
+  reversible: boolean;
+  requiresRepositoryChange: boolean;
+  costNote?: string;
+  environmentVariableNames: string[];
+  dependsOn: string[];
+}
+
+export interface EnvVarPlanItem {
+  name: string;
+  destination: string;
+  source: string;
+  required: boolean;
+  secret: boolean;
+  generatable: boolean;
+  valueStatus: 'READY' | 'NEEDS_INPUT' | 'WILL_BE_GENERATED' | 'FROM_PREVIOUS_STEP';
+}
+
+export interface DatabaseHandoff {
+  required: boolean;
+  detectedProvider?: string;
+  connectionSupplied: boolean;
+  requiredFields: string[];
+  instructions?: string;
+}
+
+export interface DeploymentActionPlan {
+  repository: string;
+  branch?: string;
+  commitSha?: string;
+  mode: string;
+  planHash: string;
+  consentNotice: string;
+  executable: boolean;
+  actions: PlannedAction[];
+  environmentVariables: EnvVarPlanItem[];
+  database?: DatabaseHandoff;
+  warnings: string[];
+  blockers: string[];
+}
+
+export interface ConfirmationResponse {
+  runId: number;
+  nonce: string;
+  planHash: string;
+  mode: string;
+  expiresAt: string;
+  consentNotice: string;
+  plan: DeploymentActionPlan;
+}
+
+export type ActionStatus = 'PENDING' | 'RUNNING' | 'SUCCEEDED' | 'FAILED' | 'SKIPPED';
+
+export interface ExecutionStep {
+  id: string;
+  order: number;
+  type: string;
+  provider: string;
+  title: string;
+  status: ActionStatus;
+  detail?: string;
+  sanitizedLog?: string;
+  startedAt?: string;
+  finishedAt?: string;
+}
+
+export type AutomationRunStatus = 'PENDING' | 'RUNNING' | 'PAUSED' | 'SUCCEEDED' | 'FAILED' | 'CANCELLED';
+
+export interface AutomationRun {
+  id: number;
+  projectId: number;
+  mode: string;
+  status: AutomationRunStatus;
+  planHash?: string;
+  repository?: string;
+  branch?: string;
+  commitSha?: string;
+  currentStepIndex: number;
+  steps?: ExecutionStep[];
+  outputs: Record<string, string>;
+  verificationRunId?: number;
+  verificationStatus?: string;
+  failureReason?: string;
+  plan?: DeploymentActionPlan;
+  createdAt?: string;
+  updatedAt?: string;
+  completedAt?: string;
+}

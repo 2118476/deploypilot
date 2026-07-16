@@ -54,3 +54,24 @@ deploypilot:
     expiration-ms: 86400000
   cors:
     allowed-origins: ${FRONTEND_URL:http://localhost:5173}
+  # AES-256-GCM key for provider credentials and stored deployment secrets.
+  # Required in production (see ProductionSecretsValidator); a development
+  # fallback is used only outside the prod profile.
+  encryption:
+    key: ${DEPLOYPILOT_ENCRYPTION_KEY:}
+  # Base URLs for provider APIs (overridable so tests can point at mock servers).
+  providers:
+    github-api-base-url: ${GITHUB_API_BASE_URL:https://api.github.com}
+    netlify-api-base-url: ${NETLIFY_API_BASE_URL:https://api.netlify.com/api/v1}
+    render-api-base-url: ${RENDER_API_BASE_URL:https://api.render.com/v1}
+  automation:
+    # Master switch for performing real external changes (DEPLOY_FOR_ME mode).
+    # Off by default so the safe default never mutates external services.
+    execution-enabled: ${DEPLOYPILOT_AUTOMATION_ENABLED:true}
+    confirmation-ttl-seconds: ${DEPLOYPILOT_CONFIRMATION_TTL_SECONDS:600}
+    # Polling interval while waiting for provider deployments to reach a terminal state.
+    poll-interval-ms: ${DEPLOYPILOT_AUTOMATION_POLL_INTERVAL_MS:2000}
+    poll-max-attempts: ${DEPLOYPILOT_AUTOMATION_POLL_MAX_ATTEMPTS:60}
+    # Production verifies only public HTTPS URLs; loopback is allowed only when
+    # explicitly enabled (used by tests against mock servers).
+    verify-allow-local: ${DEPLOYPILOT_AUTOMATION_VERIFY_ALLOW_LOCAL:false}

@@ -1,5 +1,5 @@
 import axios, { AxiosError } from 'axios';
-import type { ApiResponse, AuthResponse, User, Project, ProjectSummary, DeploymentPlan, DeploymentStep, GuideCategory, Guide, CommandSnippet, ProjectEnvVar, EnvVarDefinition, GlossaryTerm, DashboardData, LoginRequest, RegisterRequest, TechnologySelection, ErrorReportRequest, RepositoryAnalysis, StackDetectionResult, BlueprintResponse, ImportRepositoryResponse, VerificationRun, AssistResponse } from '@/types';
+import type { ApiResponse, AuthResponse, User, Project, ProjectSummary, DeploymentPlan, DeploymentStep, GuideCategory, Guide, CommandSnippet, ProjectEnvVar, EnvVarDefinition, GlossaryTerm, DashboardData, LoginRequest, RegisterRequest, TechnologySelection, ErrorReportRequest, RepositoryAnalysis, StackDetectionResult, BlueprintResponse, ImportRepositoryResponse, VerificationRun, AssistResponse, ProviderConnection, ProviderName, RepositorySummary, HostingSite, SecretView, DeploymentActionPlan, ConfirmationResponse, AutomationRun } from '@/types';
 
 const api = axios.create({
   baseURL: import.meta.env.VITE_API_BASE_URL || '',
@@ -111,6 +111,45 @@ export const verifyApi = {
     wrap(api.post<ApiResponse<{ sanitized: string; truncated: boolean; warning: string }>>(`/projects/${projectId}/logs/sanitize`, { content })),
   assist: (projectId: number, body: { question?: string; log?: string }) =>
     wrap(api.post<ApiResponse<AssistResponse>>(`/projects/${projectId}/assist`, body)),
+};
+
+export interface PlanInputs {
+  mode?: string;
+  branch?: string;
+  existingSites?: Record<string, string>;
+  newSiteNames?: Record<string, string>;
+}
+
+export const connectionApi = {
+  list: () => wrap(api.get<ApiResponse<ProviderConnection[]>>('/connections')),
+  connect: (provider: ProviderName, token: string, connectionType?: string) =>
+    wrap(api.post<ApiResponse<ProviderConnection>>(`/connections/${provider.toLowerCase()}`, { token, connectionType })),
+  disconnect: (provider: ProviderName) =>
+    wrap(api.delete<ApiResponse<void>>(`/connections/${provider.toLowerCase()}`)),
+  repositories: () => wrap(api.get<ApiResponse<RepositorySummary[]>>('/connections/github/repositories')),
+  sites: (provider: ProviderName) =>
+    wrap(api.get<ApiResponse<HostingSite[]>>(`/connections/${provider.toLowerCase()}/sites`)),
+};
+
+export const automationApi = {
+  plan: (projectId: number, inputs: PlanInputs) =>
+    wrap(api.post<ApiResponse<DeploymentActionPlan>>(`/projects/${projectId}/automation/plan`, inputs)),
+  confirm: (projectId: number, body: PlanInputs & { planHash: string }) =>
+    wrap(api.post<ApiResponse<ConfirmationResponse>>(`/projects/${projectId}/automation/confirm`, body)),
+  execute: (projectId: number, runId: number, nonce: string) =>
+    wrap(api.post<ApiResponse<AutomationRun>>(`/projects/${projectId}/automation/runs/${runId}/execute`, { nonce })),
+  retry: (projectId: number, runId: number, nonce: string) =>
+    wrap(api.post<ApiResponse<AutomationRun>>(`/projects/${projectId}/automation/runs/${runId}/retry`, { nonce })),
+  runs: (projectId: number, limit = 5) =>
+    wrap(api.get<ApiResponse<AutomationRun[]>>(`/projects/${projectId}/automation/runs?limit=${limit}`)),
+  run: (projectId: number, runId: number) =>
+    wrap(api.get<ApiResponse<AutomationRun>>(`/projects/${projectId}/automation/runs/${runId}`)),
+  secrets: (projectId: number) =>
+    wrap(api.get<ApiResponse<SecretView[]>>(`/projects/${projectId}/automation/secrets`)),
+  saveSecret: (projectId: number, body: { name: string; value: string; destination?: string }) =>
+    wrap(api.put<ApiResponse<SecretView>>(`/projects/${projectId}/automation/secrets`, body)),
+  removeSecret: (projectId: number, name: string) =>
+    wrap(api.delete<ApiResponse<void>>(`/projects/${projectId}/automation/secrets/${encodeURIComponent(name)}`)),
 };
 
 export const troubleshootApi = {
