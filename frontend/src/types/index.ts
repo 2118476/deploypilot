@@ -348,3 +348,63 @@ export interface ImportRepositoryResponse {
   analysis: RepositoryAnalysis;
   blueprint: BlueprintResponse;
 }
+
+export type CheckStatus = 'PASS' | 'WARNING' | 'FAIL' | 'SKIPPED' | 'UNKNOWN';
+export type OverallStatus = 'RUNNING' | 'HEALTHY' | 'DEGRADED' | 'UNHEALTHY' | 'INCONCLUSIVE' | 'FAILED';
+
+export interface VerificationCheck {
+  id: string;
+  category: string;
+  title: string;
+  status: CheckStatus;
+  evidence: string;
+  safeHeaders: Record<string, string>;
+  timingMs: number;
+}
+
+export interface VerificationDiagnosis {
+  severity: 'BLOCKER' | 'WARNING' | 'INFO';
+  confidence: 'CONFIRMED' | 'LIKELY' | 'POSSIBLE' | 'USER_DEVICE_CHECK';
+  affectedComponent: string;
+  title: string;
+  likelyCause: string;
+  evidence: string;
+  recommendedAction: string;
+  actionType: 'CODE_CHANGE' | 'REBUILD' | 'PROVIDER_SETTINGS' | 'USER_DEVICE';
+}
+
+export interface VersionComparison {
+  state: 'CURRENT' | 'OUTDATED' | 'AHEAD_OF_BLUEPRINT' | 'MISMATCHED' | 'UNKNOWN';
+  expectedCommit?: string;
+  liveFrontendCommit?: string;
+  liveBackendCommit?: string;
+  evidence?: string;
+  suggestion?: string;
+}
+
+export interface VerificationResult {
+  checks: VerificationCheck[];
+  diagnoses: VerificationDiagnosis[];
+  version?: VersionComparison;
+  corsResult?: string;
+  summary?: string;
+  skippedChecks: string[];
+}
+
+export interface VerificationRun {
+  id: number;
+  projectId: number;
+  blueprintId?: number;
+  frontendUrl?: string;
+  backendUrl?: string;
+  overallStatus: OverallStatus;
+  result?: VerificationResult;
+  startedAt: string;
+  completedAt?: string;
+}
+
+export interface AssistResponse {
+  contextSummary: string;
+  aiAvailable: boolean;
+  answer: string;
+}

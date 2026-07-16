@@ -1,5 +1,5 @@
 import axios, { AxiosError } from 'axios';
-import type { ApiResponse, AuthResponse, User, Project, ProjectSummary, DeploymentPlan, DeploymentStep, GuideCategory, Guide, CommandSnippet, ProjectEnvVar, EnvVarDefinition, GlossaryTerm, DashboardData, LoginRequest, RegisterRequest, TechnologySelection, ErrorReportRequest, RepositoryAnalysis, StackDetectionResult, BlueprintResponse, ImportRepositoryResponse } from '@/types';
+import type { ApiResponse, AuthResponse, User, Project, ProjectSummary, DeploymentPlan, DeploymentStep, GuideCategory, Guide, CommandSnippet, ProjectEnvVar, EnvVarDefinition, GlossaryTerm, DashboardData, LoginRequest, RegisterRequest, TechnologySelection, ErrorReportRequest, RepositoryAnalysis, StackDetectionResult, BlueprintResponse, ImportRepositoryResponse, VerificationRun, AssistResponse } from '@/types';
 
 const api = axios.create({
   baseURL: import.meta.env.VITE_API_BASE_URL || '',
@@ -98,6 +98,19 @@ export const importApi = {
     wrap(api.post<ApiResponse<StackDetectionResult>>('/repositories/preview-analysis', { repository })),
   importRepository: (repository: string) =>
     wrap(api.post<ApiResponse<ImportRepositoryResponse>>('/projects/import', { repository })),
+};
+
+export const verifyApi = {
+  start: (projectId: number, body: { frontendUrl?: string; backendUrl?: string; healthPath?: string; expectedCommit?: string; allowInsecureLocal?: boolean }) =>
+    wrap(api.post<ApiResponse<VerificationRun>>(`/projects/${projectId}/verifications`, body)),
+  get: (projectId: number, runId: number) =>
+    wrap(api.get<ApiResponse<VerificationRun>>(`/projects/${projectId}/verifications/${runId}`)),
+  list: (projectId: number, limit = 5) =>
+    wrap(api.get<ApiResponse<VerificationRun[]>>(`/projects/${projectId}/verifications?limit=${limit}`)),
+  sanitizeLog: (projectId: number, content: string) =>
+    wrap(api.post<ApiResponse<{ sanitized: string; truncated: boolean; warning: string }>>(`/projects/${projectId}/logs/sanitize`, { content })),
+  assist: (projectId: number, body: { question?: string; log?: string }) =>
+    wrap(api.post<ApiResponse<AssistResponse>>(`/projects/${projectId}/assist`, body)),
 };
 
 export const troubleshootApi = {

@@ -85,13 +85,18 @@ export default function DeploymentBlueprintPage() {
         <h1 className="text-2xl font-bold text-slate-900 dark:text-slate-100">
           Deployment Blueprint{project ? ` — ${project.name}` : ''}
         </h1>
-        {blueprint && (
-          <button onClick={() => regenMut.mutate()} disabled={regenMut.isPending} className="btn-secondary text-sm">
-            {regenMut.isPending
-              ? <span className="inline-flex items-center gap-2"><Loader2 className="w-4 h-4 animate-spin" /> Regenerating…</span>
-              : <span className="inline-flex items-center gap-2"><RefreshCw className="w-4 h-4" /> Regenerate blueprint</span>}
-          </button>
-        )}
+        <div className="flex flex-wrap gap-2">
+          <Link to={`/projects/${projectId}/verify`} className="btn-primary text-sm inline-flex items-center gap-2">
+            <ShieldCheck className="w-4 h-4" /> Verify deployment
+          </Link>
+          {blueprint && (
+            <button onClick={() => regenMut.mutate()} disabled={regenMut.isPending} className="btn-secondary text-sm">
+              {regenMut.isPending
+                ? <span className="inline-flex items-center gap-2"><Loader2 className="w-4 h-4 animate-spin" /> Regenerating…</span>
+                : <span className="inline-flex items-center gap-2"><RefreshCw className="w-4 h-4" /> Regenerate blueprint</span>}
+            </button>
+          )}
+        </div>
       </div>
 
       <div className="card p-4 mb-6 flex items-start gap-3 border-primary-200 dark:border-primary-800 bg-primary-50/50 dark:bg-primary-900/10">

@@ -214,11 +214,38 @@ Once the backend is running, API documentation is available at:
 
 The frontend stores the JWT in `localStorage`. This is simple and works across tabs, but any successful XSS attack could read the token. Mitigations in place: React's default output escaping, no `dangerouslySetInnerHTML`, short token lifetime (24 h). A move to `HttpOnly` cookies with CSRF protection is a candidate for a later phase; it was deliberately not rushed into this one to avoid a broad auth rewrite.
 
+## Live Deployment Verification (Stage 3)
+
+After you deploy by following the blueprint, open a project → **Verify Deployment**, enter your live frontend and
+backend URLs, and DeployPilot runs read-only checks and explains what works, what's broken, and what to fix next.
+
+It checks (deterministically, no AI needed): frontend serves HTML and its assets load; SPA routes survive a direct
+refresh; no Netlify/Vercel/Render provider error page; the bundle isn't pointing at localhost or an unreplaced
+`${...}` placeholder; the backend responds and its health endpoint works; the `/api` prefix isn't missing or
+duplicated; no stack traces are exposed; a safe CORS preflight confirms the backend accepts the **production**
+frontend origin (accepted / rejected / wrong-origin / wildcard-credentials-conflict / unknown); the deployed
+version vs an expected commit (CURRENT / OUTDATED / MISMATCHED / UNKNOWN, with a suggested `/version.json` format
+when nothing is exposed); and — for PWAs — manifest, service-worker content-type/scope, `sw.js`-rewritten-to-HTML,
+and cache headers for HTML / worker / hashed assets. Root-cause diagnoses carry severity, confidence
+(CONFIRMED / LIKELY / POSSIBLE / USER-DEVICE), evidence and an exact next action.
+
+An **important UNKNOWN never becomes HEALTHY**, and a frontend that can't talk to its backend is never HEALTHY.
+
+**Project-aware troubleshooter**: summarises this project's analysis, blueprint and latest verification into a minimal,
+secret-redacted payload and (if `GEMINI_API_KEY` is set) asks AI to explain it as verified facts / likely
+explanations / next steps. Works without AI too. Pasted logs are size-limited and redacted before they leave your
+session; automated redaction reduces but can't guarantee removal of every secret.
+
+**Security**: every URL is treated as untrusted. Only HTTPS (HTTP allowed only in explicit local-dev mode), only
+GET/HEAD/OPTIONS, no credentials in URLs, and localhost / loopback / private / link-local / cloud-metadata addresses
+are blocked — including on redirect hops. Connect/read/total timeouts, response-size caps, no binary downloads, and
+DeployPilot never forwards its own auth headers. Verification only runs against URLs on your own projects.
+
 ## Roadmap
 
-1. **Now — read-only repository analysis**: detect the stack, surface evidence, prepare env-var checklists
-2. **Next — deployment blueprint**: turn analysis results into a concrete, platform-specific deployment plan automatically
-3. **Then — deployment verification**: check DNS, health endpoints, CORS and env-var completeness against the blueprint
+1. ~~Read-only repository analysis~~ ✓
+2. ~~Deployment blueprint~~ ✓
+3. ~~Live deployment verification~~ ✓ — checks DNS, health, CORS, version and PWA/cache against the blueprint
 4. **Later — assisted automation**: after explicit user confirmation, automate deployment steps through GitHub, Netlify and Render APIs (never without consent)
 
 ## License

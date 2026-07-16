@@ -23,13 +23,19 @@ public class GeminiService {
         return config.getKey() != null && !config.getKey().isBlank();
     }
 
-    @SuppressWarnings("unchecked")
     public String troubleshoot(String errorContent) {
+        return generate(buildPrompt(errorContent));
+    }
+
+    /**
+     * Sends an arbitrary (already sanitised) prompt to Gemini. Callers are
+     * responsible for redacting secrets before calling this.
+     */
+    @SuppressWarnings("unchecked")
+    public String generate(String prompt) {
         if (!isConfigured()) {
             return "AI troubleshooting is not configured. Please set GEMINI_API_KEY environment variable on the backend.";
         }
-
-        String prompt = buildPrompt(errorContent);
 
         Map<String, Object> contentPart = Map.of("text", prompt);
         Map<String, Object> content = Map.of("parts", List.of(contentPart));
