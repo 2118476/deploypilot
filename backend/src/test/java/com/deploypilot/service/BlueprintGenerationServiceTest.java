@@ -285,4 +285,115 @@ class BlueprintGenerationServiceTest {
         assertTrue(diff.contains("+ X"));
         assertEquals("(no changes needed)", service.simpleDiff("same\n", "same\n"));
     }
+
+    // ==================== Supabase accuracy regressions ====================
+
+    /** React/Vite frontend + Express backend, both using Supabase. */
+    private StackDetectionResult supabaseAnalysis() {
+        StackDetectionResult a = new StackDetectionResult();
+        a.setRepository("acme/jobpilot");
+        a.setStructure("MONOREPO");
+        a.getDetections().add(det("FRONTEND_FRAMEWORK", "React", "frontend", "HIGH"));
+        a.getDetections().add(det("BUILD_TOOL", "Vite", "frontend", "HIGH"));
+        a.getDetections().add(det("BACKEND_FRAMEWORK", "Express (Node.js)", "backend", "HIGH"));
+        a.getDetections().add(det("LANGUAGE", "TypeScript", "backend", "HIGH"));
+        a.getDetections().add(det("EXTERNAL_SERVICE", "Supabase", "frontend", "HIGH"));
+        a.getDetections().add(det("HEALTH_ENDPOINT", "/api/health", "backend", "HIGH"));
+        a.getBuildCommands().add("cd frontend && npm run build");
+        a.getStartCommands().add("cd backend && npm run start");
+        // frontend (public) + backend (secret) Supabase vars
+        a.getEnvironmentVariables().add(env("VITE_SUPABASE_URL", "PUBLIC_CONFIGURATION", "frontend/.env.example"));
+        a.getEnvironmentVariables().add(env("VITE_SUPABASE_ANON_KEY", "PUBLIC_PUBLISHABLE_CREDENTIAL", "frontend/.env.example"));
+        a.getEnvironmentVariables().add(env("SUPABASE_URL", "CONFIGURATION", "backend/.env.example"));
+        a.getEnvironmentVariables().add(env("SUPABASE_SERVICE_ROLE_KEY", "SECRET_OR_SENSITIVE", "backend/.env.example"));
+        return a;
+    }
+
+    private Finding finding(BlueprintResult bp, String titleFragment) {
+        return bp.getFindings().stream()
+            .filter(f -> f.getTitle().toLowerCase().contains(titleFragment.toLowerCase()))
+            .findFirst().orElse(null);
+    }
+
+    // ---- Fix 1: anon key is not a blocker; RLS informational finding present ----
+
+    @Test
+    void supabaseAnonKeyIsNotFlaggedAsExposedSecret() {
+        BlueprintResult bp = service.generate(supabaseAnalysis(), Map.of(), Map.of());
+        // no BLOCKER about the anon key being an exposed secret
+        assertTrue(bp.getFindings().stream().noneMatch(f ->
+            f.getSeverity().equals("BLOCKER") && f.getDetail().contains("VITE_SUPABASE_ANON_KEY")),
+            "publishable anon key must not be a blocker");
+        assertEquals("PUBLIC_PUBLISHABLE_CREDENTIAL", envVar(bp, "VITE_SUPABASE_ANON_KEY").getClassification());
+    }
+
+    @Test
+    void supabaseAnonKeyAddsRlsInformationalWarning() {
+        BlueprintResult bp = service.generate(supabaseAnalysis(), Map.of(), Map.of());
+        Finding rls = finding(bp, "Row Level Security");
+        assertNotNull(rls, "an RLS informational warning is expected");
+        assertEquals("INFORMATIONAL", rls.getSeverity());
+        assertTrue(rls.getDetail().contains("VITE_SUPABASE_ANON_KEY"));
+    }
+
+    @Test
+    void publicPrefixedServiceRoleKeyStaysABlocker() {
+        StackDetectionResult a = supabaseAnalysis();
+        // a service role key wrongly exposed with a public prefix must still block
+        a.getEnvironmentVariables().add(env("VITE_SUPABASE_SERVICE_ROLE_KEY", "SECRET_OR_SENSITIVE", "frontend/.env.example"));
+        BlueprintResult bp = service.generate(a, Map.of(), Map.of());
+        assertTrue(bp.getFindings().stream().anyMatch(f ->
+            f.getSeverity().equals("BLOCKER") && f.getDetail().contains("VITE_SUPABASE_SERVICE_ROLE_KEY")),
+            "an exposed service-role key must remain a blocker");
+    }
+
+    // ---- Fix 2: detected health path drives the Render recommendation ----
+
+    @Test
+    void detectedHealthPathBecomesRenderHealthCheckPath() {
+        BlueprintResult bp = service.generate(supabaseAnalysis(), Map.of(), Map.of());
+        Component backend = component(bp, "backend@backend");
+        assertEquals("/api/health", backend.getHealthCheckPath());
+        // render.yaml preview should use the exact detected path
+        BlueprintResult.FilePreview render = bp.getFilePreviews().stream()
+            .filter(p -> p.getPath().equals("render.yaml")).findFirst().orElse(null);
+        assertNotNull(render);
+        assertTrue(render.getSuggestedContent().contains("healthCheckPath: /api/health"));
+        assertTrue(bp.getFindings().stream().anyMatch(f -> f.getTitle().contains("Health-check path detected")));
+    }
+
+    // ---- Fix 3: Supabase vars map to the correct component ----
+
+    @Test
+    void supabaseVarsMapToCorrectComponents() {
+        BlueprintResult bp = service.generate(supabaseAnalysis(), Map.of(), Map.of());
+        assertEquals("frontend@frontend", envVar(bp, "VITE_SUPABASE_URL").getComponentId());
+        assertEquals("frontend@frontend", envVar(bp, "VITE_SUPABASE_ANON_KEY").getComponentId());
+        assertEquals("backend@backend", envVar(bp, "SUPABASE_URL").getComponentId());
+        assertEquals("backend@backend", envVar(bp, "SUPABASE_SERVICE_ROLE_KEY").getComponentId());
+    }
+
+    @Test
+    void backendSupabaseRelationshipNeverUsesVitePublicVar() {
+        BlueprintResult bp = service.generate(supabaseAnalysis(), Map.of(), Map.of());
+        BlueprintResult.Relationship backendToSupabase = bp.getRelationships().stream()
+            .filter(r -> r.getFromComponent().equals("backend@backend") && r.getToComponent().contains("supabase"))
+            .findFirst().orElse(null);
+        assertNotNull(backendToSupabase, "backend should connect to Supabase");
+        assertNotNull(backendToSupabase.getViaVariable());
+        assertFalse(backendToSupabase.getViaVariable().startsWith("VITE_"),
+            "backend must never use a VITE_ public variable");
+        // the frontend also connects to Supabase via a public var
+        BlueprintResult.Relationship frontendToSupabase = bp.getRelationships().stream()
+            .filter(r -> r.getFromComponent().equals("frontend@frontend") && r.getToComponent().contains("supabase"))
+            .findFirst().orElse(null);
+        assertNotNull(frontendToSupabase, "frontend should connect to Supabase");
+        assertTrue(frontendToSupabase.getViaVariable().startsWith("VITE_"));
+    }
+
+    @Test
+    void serviceRoleKeyValueSourceIsBackendOnly() {
+        BlueprintResult bp = service.generate(supabaseAnalysis(), Map.of(), Map.of());
+        assertTrue(envVar(bp, "SUPABASE_SERVICE_ROLE_KEY").getValueSource().toLowerCase().contains("never expose"));
+    }
 }

@@ -30,6 +30,7 @@ const CONFIDENCE_STYLES: Record<string, string> = {
 
 const CLASSIFICATION_STYLES: Record<string, { label: string; cls: string }> = {
   SECRET_OR_SENSITIVE: { label: 'Secret / sensitive', cls: 'bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400' },
+  PUBLIC_PUBLISHABLE_CREDENTIAL: { label: 'Public / publishable credential', cls: 'bg-sky-50 dark:bg-sky-900/20 text-sky-700 dark:text-sky-400' },
   PUBLIC_CONFIGURATION: { label: 'Public config', cls: 'bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-400' },
   CONFIGURATION: { label: 'Configuration', cls: 'bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300' },
 };

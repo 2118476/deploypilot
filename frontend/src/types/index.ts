@@ -211,7 +211,7 @@ export interface StackDetection {
 
 export interface EnvVarFinding {
   name: string;
-  classification: 'SECRET_OR_SENSITIVE' | 'PUBLIC_CONFIGURATION' | 'CONFIGURATION';
+  classification: 'SECRET_OR_SENSITIVE' | 'PUBLIC_PUBLISHABLE_CREDENTIAL' | 'PUBLIC_CONFIGURATION' | 'CONFIGURATION';
   source: string;
 }
 
@@ -277,7 +277,7 @@ export interface BlueprintEnvVar {
   name: string;
   componentId?: string;
   targetPlatform?: string;
-  classification: 'SECRET_OR_SENSITIVE' | 'PUBLIC_CONFIGURATION' | 'CONFIGURATION';
+  classification: 'SECRET_OR_SENSITIVE' | 'PUBLIC_PUBLISHABLE_CREDENTIAL' | 'PUBLIC_CONFIGURATION' | 'CONFIGURATION';
   required?: boolean | null;
   valueSource: string;
   expectedFormat?: string;
