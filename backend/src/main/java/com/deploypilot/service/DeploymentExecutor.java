@@ -488,6 +488,9 @@ public class DeploymentExecutor {
         if (m != null && ("FRONTEND_PUBLIC_URL".equals(m.getDependsOnOutput()) || isCorsVar(m))) {
             return outputs.get(OUT_FRONTEND_URL);
         }
+        // Well-known non-secret config DeployPilot supplies itself (e.g. AI_PROVIDER=gemini).
+        String known = ActionPlanService.KNOWN_CONFIG_DEFAULTS.get(name.toUpperCase(Locale.ROOT));
+        if (known != null) return known;
         return null;
     }
 

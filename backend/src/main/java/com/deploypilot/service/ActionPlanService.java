@@ -48,9 +48,16 @@ public class ActionPlanService {
     private final ProviderRegistry providers;
     private final MigrationDiscoveryService migrationDiscoveryService;
 
-    // Backend-only DB variables filled from the Supabase connection details.
+    // Backend-only variables filled from the prepared Supabase project. These are
+    // set on the backend host (Render) and never on the frontend host (Netlify).
     static final Set<String> DB_BACKEND_VARS = Set.of(
-        "DATABASE_URL", "JDBC_DATABASE_URL", "SUPABASE_SERVICE_ROLE_KEY", "DATABASE_PASSWORD");
+        "DATABASE_URL", "JDBC_DATABASE_URL", "SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY",
+        "DATABASE_PASSWORD", "DATABASE_USERNAME");
+
+    // Non-secret configuration DeployPilot can supply itself. DeployPilot's only
+    // supported AI provider is Gemini, so AI_PROVIDER is set to "gemini"; the
+    // model (GEMINI_MODEL) is left to the repository/app default unless overridden.
+    public static final Map<String, String> KNOWN_CONFIG_DEFAULTS = Map.of("AI_PROVIDER", "gemini");
 
     public ActionPlanService(ProjectRepository projectRepository,
                              DeploymentBlueprintService blueprintService,
@@ -272,65 +279,104 @@ public class ActionPlanService {
         String frontendId = frontend != null ? frontend.getId() : null;
 
         for (BlueprintResult.EnvVarMapping m : bp.getEnvironmentVariables()) {
+            String name = m.getName();
             boolean secret = "SECRET_OR_SENSITIVE".equals(m.getClassification());
             boolean toFrontend = frontendId != null && frontendId.equals(m.getComponentId());
             boolean toBackend = backendId != null && backendId.equals(m.getComponentId());
 
             EnvVarPlanItem item = new EnvVarPlanItem();
-            item.setName(m.getName());
+            item.setName(name);
             item.setRequired(Boolean.TRUE.equals(m.getRequired()));
             item.setSecret(secret);
             item.setGeneratable(m.isGeneratable());
             item.setSource(m.getValueSource());
 
             String status = valueStatus(m, secret, suppliedSecrets);
+            // DeployPilot can supply a few well-known non-secret config values itself.
+            if ("NEEDS_INPUT".equals(status) && KNOWN_CONFIG_DEFAULTS.containsKey(name.toUpperCase(Locale.ROOT))) {
+                status = "READY";
+            }
             String destination;
-            // Supabase automation supplies database variables from the prepared project.
-            if (supabaseActive && isDbBackendVar(m.getName())) {
-                destination = "Backend service (from Supabase)";
-                r.dbBackendEnvNames.add(m.getName());
-                status = "FROM_PREVIOUS_STEP";
-            } else if (supabaseActive && isSupabaseFrontendVar(m.getName()) && !secret) {
-                destination = "Frontend site (public Supabase value)";
-                r.frontendEnvNames.add(m.getName());
-                status = "FROM_PREVIOUS_STEP";
+            boolean pushBackend = false, pushFrontend = false, pushDbBackend = false;
+
+            if (isPortVar(name)) {
+                // PORT is assigned by the hosting platform and must never be configured.
+                destination = "Assigned automatically by the hosting platform (never configured by DeployPilot)";
+                status = "MANAGED_BY_PLATFORM";
+            } else if (isSupabasePublicFrontendVar(name)) {
+                // VITE_/NEXT_PUBLIC_ Supabase URL + anon/publishable key are public → frontend host.
+                destination = supabaseActive ? "Frontend site (public Supabase value)" : "Frontend site";
+                pushFrontend = frontendId != null;
+                if (supabaseActive) status = "FROM_PREVIOUS_STEP";
+            } else if (isSupabaseManagedBackendVar(name)) {
+                // SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY and the DB connection vars are backend-only.
+                if (supabaseActive) {
+                    destination = "Backend service (from Supabase)";
+                    pushDbBackend = backendId != null;
+                    status = "FROM_PREVIOUS_STEP";
+                } else {
+                    destination = "Backend service";
+                    pushBackend = backendId != null;
+                }
             } else if (toFrontend && secret) {
                 // Safety: a secret must never be pushed to the frontend host.
                 destination = "Backend service (kept off the frontend)";
-                plan.getWarnings().add("Variable " + m.getName()
-                    + " is sensitive and will not be sent to the frontend host.");
-                if (backendId != null) r.backendEnvNames.add(m.getName());
+                plan.getWarnings().add("Variable " + name + " is sensitive and will not be sent to the frontend host.");
+                pushBackend = backendId != null;
             } else if (toFrontend) {
                 destination = "Frontend site";
-                r.frontendEnvNames.add(m.getName());
+                pushFrontend = true;
             } else if (toBackend) {
                 destination = "Backend service";
-                r.backendEnvNames.add(m.getName());
+                pushBackend = true;
             } else {
                 destination = "Repository (.env.example)";
             }
+
+            // Env-var hygiene: never include an optional variable that has no value in a
+            // provider update. Required-but-missing values still block below.
+            boolean hasValue = "READY".equals(status) || "WILL_BE_GENERATED".equals(status)
+                || "FROM_PREVIOUS_STEP".equals(status);
+            boolean willSet = item.isRequired() || hasValue;
+            if (!willSet && (pushBackend || pushFrontend || pushDbBackend)) {
+                destination = destination + " — skipped (optional, no value provided)";
+                pushBackend = pushFrontend = pushDbBackend = false;
+            }
+            if (pushDbBackend) r.dbBackendEnvNames.add(name);
+            if (pushBackend) r.backendEnvNames.add(name);
+            if (pushFrontend) r.frontendEnvNames.add(name);
+
             item.setDestination(destination);
             item.setValueStatus(status);
             r.items.add(item);
 
-            if (isCorsVar(m) && toBackend) r.backendCorsVar = m.getName();
+            if (isCorsVar(m) && toBackend) r.backendCorsVar = name;
 
-            if (item.isRequired() && "NEEDS_INPUT".equals(item.getValueStatus())) {
-                plan.getBlockers().add("Provide a value for required variable " + m.getName()
-                    + " (" + destination + ").");
+            if (item.isRequired() && "NEEDS_INPUT".equals(status)) {
+                plan.getBlockers().add("Provide a value for required variable " + name + " (" + destination + ").");
             }
         }
         return r;
     }
 
-    private boolean isDbBackendVar(String name) {
-        return name != null && DB_BACKEND_VARS.contains(name.toUpperCase(Locale.ROOT));
+    private boolean isPortVar(String name) {
+        return name != null && name.equalsIgnoreCase("PORT");
     }
 
-    private boolean isSupabaseFrontendVar(String name) {
+    /** Public Supabase browser-client variables: VITE_/NEXT_PUBLIC_ URL + anon key (never service-role). */
+    private boolean isSupabasePublicFrontendVar(String name) {
         if (name == null) return false;
         String n = name.toUpperCase(Locale.ROOT);
-        return n.startsWith("VITE_SUPABASE_") || n.startsWith("NEXT_PUBLIC_SUPABASE_");
+        boolean publicPrefix = n.startsWith("VITE_SUPABASE_") || n.startsWith("NEXT_PUBLIC_SUPABASE_");
+        return publicPrefix && !n.contains("SERVICE_ROLE");
+    }
+
+    /** Backend-only variables filled from the managed Supabase project (never public/VITE_). */
+    private boolean isSupabaseManagedBackendVar(String name) {
+        if (name == null) return false;
+        String n = name.toUpperCase(Locale.ROOT);
+        if (n.startsWith("VITE_") || n.startsWith("NEXT_PUBLIC_")) return false;
+        return DB_BACKEND_VARS.contains(n);
     }
 
     private String valueStatus(BlueprintResult.EnvVarMapping m, boolean secret, Set<String> suppliedSecrets) {
@@ -357,7 +403,6 @@ public class ActionPlanService {
                                 DeploymentActionPlan plan, int[] order, List<PlannedAction> actions, Set<String> suppliedSecrets) {
         DatabaseChoice choice = DatabaseChoice.parse(request.getDatabaseChoice());
         boolean supabaseConnected = connections.containsKey(ProviderType.SUPABASE);
-        AutomationMode mode = parseMode(request.getMode());
         String platform = notBlank(database.getSelectedPlatform()) ? database.getSelectedPlatform() : database.getName();
 
         DeploymentActionPlan.DatabaseHandoff h = new DeploymentActionPlan.DatabaseHandoff();
@@ -374,7 +419,11 @@ public class ActionPlanService {
         h.setRequiredFields(fields);
         h.setConnectionSupplied(fields.stream().anyMatch(suppliedSecrets::contains));
 
-        boolean supabaseAutomation = choice != DatabaseChoice.MANUAL && supabaseConnected && mode == AutomationMode.DEPLOY_FOR_ME;
+        // Supabase-managed actions and routing appear whenever the user chose a
+        // Supabase project (create/existing) and connected their account — the plan
+        // must show the creation actions and route the managed variables regardless
+        // of mode. Whether the plan can actually execute is gated separately by mode.
+        boolean supabaseAutomation = choice != DatabaseChoice.MANUAL && supabaseConnected;
 
         if (!supabaseAutomation) {
             if (choice != DatabaseChoice.MANUAL && !supabaseConnected) {
@@ -402,22 +451,28 @@ public class ActionPlanService {
         if (choice == DatabaseChoice.CREATE_SUPABASE_PROJECT) {
             if (!notBlank(request.getSupabaseOrgId())) plan.getBlockers().add("Select a Supabase organization to create the project in.");
             if (!notBlank(request.getSupabaseProjectName())) plan.getBlockers().add("Choose a name for the new Supabase project.");
-            h.setInstructions("DeployPilot will create a new Supabase project on the free plan, wait until it is ready, "
-                + "then use its connection details. It never selects a paid plan.");
+            h.setInstructions("DeployPilot will create a new free Supabase project in the selected organization and region, "
+                + "wait until it is ACTIVE_HEALTHY, then retrieve its URL, anon/publishable key and service-role key through the "
+                + "Supabase Management API and store them encrypted. It never selects a paid plan and never asks you for the "
+                + "service-role key. Repository schema is applied only after your explicit confirmation.");
             PlannedAction create = action(order, "database.create", ActionType.CREATE, "SUPABASE", account, database.getName(),
-                "Create Supabase project",
-                "Create a new Supabase project '" + safeName(request.getSupabaseProjectName()) + "' on the free plan.",
+                "Create free Supabase project",
+                "Create a new free Supabase project '" + safeName(request.getSupabaseProjectName()) + "'"
+                    + (notBlank(request.getSupabaseRegion()) ? " in region " + safeName(request.getSupabaseRegion()) : "")
+                    + " in the selected organization.",
                 null, true, false, false, false, "Free plan (no cost). DeployPilot never selects a paid Supabase plan.", List.of(), List.of());
             actions.add(create);
             PlannedAction wait = action(order, "database.wait", ActionType.READ_ONLY, "SUPABASE", account, database.getName(),
-                "Wait for the database to be ready", "Wait until the new Supabase project is active and healthy.",
+                "Wait until the project is ACTIVE_HEALTHY",
+                "Wait until the new Supabase project reaches ACTIVE_HEALTHY before using it.",
                 null, false, false, true, false, null, List.of(), List.of(create.getId()));
             actions.add(wait);
             lastDbActionId = wait.getId();
         } else {
             if (!notBlank(request.getSupabaseProjectRef())) plan.getBlockers().add("Select an existing Supabase project to use.");
             refForMigrations = request.getSupabaseProjectRef();
-            h.setInstructions("DeployPilot will use your existing Supabase project and apply any approved, safe migrations.");
+            h.setInstructions("DeployPilot will use your existing Supabase project, read its credentials through the Management "
+                + "API and store them encrypted, then apply approved, safe repository schema only after your confirmation.");
             PlannedAction inspect = action(order, "database.inspect", ActionType.READ_ONLY, "SUPABASE", account, database.getName(),
                 "Inspect Supabase project", "Read the selected Supabase project's status and details (read-only).",
                 request.getSupabaseProjectRef(), false, false, true, false, null, List.of(), List.of());
@@ -425,42 +480,48 @@ public class ActionPlanService {
             lastDbActionId = inspect.getId();
         }
 
-        if (request.isApplyMigrations()) {
-            List<MigrationInfo> migrations = discoverMigrations(bp, plan.getBranch(), projectId, refForMigrations);
-            migrations.forEach(mi -> h.getMigrations().add(new DeploymentActionPlan.DatabaseHandoff.MigrationView(
-                mi.name(), mi.checksum(), mi.order(), mi.previouslyApplied(), mi.destructive(), mi.safetyClassification(), mi.reason())));
-            boolean anyDestructive = migrations.stream().anyMatch(MigrationInfo::destructive);
-            boolean anyPending = migrations.stream().anyMatch(mi -> !mi.previouslyApplied() && !mi.destructive());
-            if (!migrations.isEmpty()) {
-                PlannedAction inspectMig = action(order, "database.migrations.inspect", ActionType.READ_ONLY, "NONE", null, database.getName(),
-                    "Inspect repository migrations",
-                    "Review " + migrations.size() + " repository-owned migration(s), their order and checksums.",
-                    null, false, false, true, false, null, List.of(), List.of(lastDbActionId));
-                actions.add(inspectMig);
-                lastDbActionId = inspectMig.getId();
-            }
-            if (anyDestructive) {
-                String names = migrations.stream().filter(MigrationInfo::destructive).map(MigrationInfo::name)
-                    .collect(Collectors.joining(", "));
-                plan.getBlockers().add("Potentially destructive migration(s) detected (" + names + "). DeployPilot will not "
-                    + "apply them automatically — review them with a database expert outside DeployPilot.");
-            } else if (anyPending) {
-                PlannedAction applyMig = action(order, "database.migrations.apply", ActionType.UPDATE, "SUPABASE", account, database.getName(),
-                    "Apply safe migrations",
-                    "Apply the safe, not-yet-applied repository migrations in order. Checksums prevent re-applying completed ones.",
-                    null, false, true, false, false, null, List.of(), List.of(lastDbActionId));
-                actions.add(applyMig);
-                lastDbActionId = applyMig.getId();
-            }
-        }
-
+        // Credentials are retrieved and stored encrypted BEFORE any schema is applied.
         PlannedAction creds = action(order, "database.credentials", ActionType.READ_ONLY, "SUPABASE", account, database.getName(),
-            "Prepare database connection details",
-            "Read the Supabase connection details and prepare the backend database variables and the frontend public "
-                + "Supabase values. The service-role key and password stay backend-only and are never exposed.",
+            "Retrieve and store database credentials",
+            "Retrieve the project URL, anon/publishable key and service-role key through the Supabase Management API and store "
+                + "them encrypted. The service-role key and database password stay backend-only and are never exposed to the browser.",
             null, false, false, true, false, null, List.of(), List.of(lastDbActionId));
         actions.add(creds);
         lastDbActionId = creds.getId();
+
+        // Repository-owned schema/migrations are always detected and shown (checksum +
+        // SQL-safety). Applying requires explicit confirmation; destructive SQL is blocked.
+        List<MigrationInfo> migrations = discoverMigrations(bp, plan.getBranch(), projectId, refForMigrations);
+        migrations.forEach(mi -> h.getMigrations().add(new DeploymentActionPlan.DatabaseHandoff.MigrationView(
+            mi.name(), mi.checksum(), mi.order(), mi.previouslyApplied(), mi.destructive(), mi.safetyClassification(), mi.reason())));
+        boolean anyDestructive = migrations.stream().anyMatch(MigrationInfo::destructive);
+        boolean anyPending = migrations.stream().anyMatch(mi -> !mi.previouslyApplied() && !mi.destructive());
+        if (!migrations.isEmpty()) {
+            PlannedAction inspectMig = action(order, "database.migrations.inspect", ActionType.READ_ONLY, "NONE", null, database.getName(),
+                "Review repository database schema",
+                "Review " + migrations.size() + " repository-owned schema/migration file(s), their order, checksums and SQL-safety result.",
+                null, false, false, true, false, null, List.of(), List.of(lastDbActionId));
+            actions.add(inspectMig);
+            lastDbActionId = inspectMig.getId();
+        }
+        if (anyDestructive) {
+            String names = migrations.stream().filter(MigrationInfo::destructive).map(MigrationInfo::name)
+                .collect(Collectors.joining(", "));
+            plan.getBlockers().add("Potentially destructive SQL detected (" + names + "). DeployPilot will not apply it "
+                + "automatically — review it with a database expert outside DeployPilot.");
+        } else if (anyPending && request.isApplyMigrations()) {
+            PlannedAction applyMig = action(order, "database.migrations.apply", ActionType.UPDATE, "SUPABASE", account, database.getName(),
+                "Apply repository schema after confirmation",
+                "Apply the safe, not-yet-applied repository schema/migrations in order after your confirmation. Checksums prevent "
+                    + "re-applying completed ones.",
+                null, false, true, false, false, null, List.of(), List.of(lastDbActionId));
+            actions.add(applyMig);
+            lastDbActionId = applyMig.getId();
+        } else if (anyPending) {
+            plan.getWarnings().add("Repository database schema detected but not selected for automatic apply. Enable "
+                + "\"apply schema/migrations\" and confirm the plan to apply it — DeployPilot never changes your database schema "
+                + "without explicit confirmation.");
+        }
 
         plan.setDatabase(h);
         return new DbPlan(true, lastDbActionId);
