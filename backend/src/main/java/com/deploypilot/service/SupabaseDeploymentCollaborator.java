@@ -167,6 +167,9 @@ public class SupabaseDeploymentCollaborator {
         if (info.serviceRoleKey() != null) {
             secretService.store(projectId, userId, "SUPABASE_SERVICE_ROLE_KEY", info.serviceRoleKey(), "Backend service");
         }
+        // Backend also gets the project URL (same value as the public URL, but the
+        // backend references it as SUPABASE_URL rather than the VITE_ variant).
+        if (info.restUrl() != null) secretService.store(projectId, userId, "SUPABASE_URL", info.restUrl(), "Backend service");
         // Frontend-safe (public) values.
         if (info.restUrl() != null) secretService.store(projectId, userId, "VITE_SUPABASE_URL", info.restUrl(), "Frontend site");
         if (info.anonKey() != null) secretService.store(projectId, userId, "VITE_SUPABASE_ANON_KEY", info.anonKey(), "Frontend site");

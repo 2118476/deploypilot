@@ -34,6 +34,13 @@ public class MigrationDiscoveryService {
         // "db/migration/" also matches backend/src/main/resources/db/migration/
     };
 
+    // Single-file schema/setup scripts (e.g. JobPilot's supabase/schema.sql) that
+    // are database setup even though they are not in a migrations directory.
+    private static final String[] SCHEMA_FILES = {
+        "supabase/schema.sql", "supabase/seed.sql", "database/schema.sql",
+        "db/schema.sql", "schema.sql", "supabase/setup.sql"
+    };
+
     private final RepositoryFileReader fileReader;
     private final AppliedDatabaseMigrationRepository appliedRepository;
 
@@ -95,8 +102,13 @@ public class MigrationDiscoveryService {
     private boolean isMigrationPath(String path) {
         if (path == null || !path.toLowerCase().endsWith(".sql")) return false;
         String p = path.replace('\\', '/');
+        String lower = p.toLowerCase();
         for (String dir : MIGRATION_DIRS) {
-            if (p.contains(dir)) return true;
+            if (lower.contains(dir)) return true;
+        }
+        // Single-file schema/setup scripts anywhere in the tree.
+        for (String schema : SCHEMA_FILES) {
+            if (lower.equals(schema) || lower.endsWith("/" + schema)) return true;
         }
         return false;
     }

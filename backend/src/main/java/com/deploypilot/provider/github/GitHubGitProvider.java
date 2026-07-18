@@ -96,14 +96,36 @@ public class GitHubGitProvider implements GitProvider {
 
     @Override
     public RepoCommit getLatestCommit(ProviderCredential credential, RepositoryRef ref, String branch) {
-        ApiResult r = http.get(repo(ref) + "/branches/" + enc(branch), credential);
-        if (r.isNotFound()) {
+        // Prefer endpoints that a fine-grained token with only "Contents" access can
+        // read. The Git refs API (/git/ref/heads/{branch}) and the commits API both
+        // work with Contents read/write; the /branches/{branch} endpoint additionally
+        // needs Administration read for protection info and 403s for many fine-grained
+        // tokens — so it is used only as a last resort.
+        ApiResult gitRef = http.get(repo(ref) + "/git/ref/heads/" + enc(branch), credential);
+        if (gitRef.isSuccess()) {
+            String sha = gitRef.body().path("object").path("sha").asText(null);
+            if (sha != null) return new RepoCommit(sha, branch);
+        } else if (gitRef.isUnauthorized()) {
+            throw new ProviderException.BadCredentials("GitHub rejected the token for " + ref.fullName());
+        }
+
+        ApiResult commits = http.get(repo(ref) + "/commits/" + enc(branch), credential);
+        if (commits.isSuccess()) {
+            String sha = commits.body().path("sha").asText(null);
+            if (sha != null) return new RepoCommit(sha, branch);
+        } else if (commits.isUnauthorized()) {
+            throw new ProviderException.BadCredentials("GitHub rejected the token for " + ref.fullName());
+        }
+
+        ApiResult branchInfo = http.get(repo(ref) + "/branches/" + enc(branch), credential);
+        if (branchInfo.isNotFound() && commits.isNotFound() && gitRef.isNotFound()) {
             throw new ProviderException.NotFound("Branch not found: " + branch + " in " + ref.fullName());
         }
-        if (!r.isSuccess()) {
-            throw new ProviderException.UnexpectedResult("Could not read branch " + branch + " (status " + r.status() + ").");
+        if (!branchInfo.isSuccess()) {
+            throw new ProviderException.UnexpectedResult("Could not resolve the latest commit for branch "
+                + branch + " (status " + branchInfo.status() + "). Ensure the GitHub token has Contents read access.");
         }
-        String sha = r.body().path("commit").path("sha").asText(null);
+        String sha = branchInfo.body().path("commit").path("sha").asText(null);
         if (sha == null) {
             throw new ProviderException.UnexpectedResult("GitHub returned no commit sha for branch " + branch);
         }
