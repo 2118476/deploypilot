@@ -96,6 +96,39 @@ class JobPilotCreateNewFlowTest {
         assertEquals("FROM_PREVIOUS_STEP", envItem(plan, "VITE_SUPABASE_ANON_KEY").path("valueStatus").asText());
     }
 
+    // ==================== Supabase-only app (no detected DATABASE component) ====================
+
+    @Test
+    void createNewOnSupabaseOnlyAppStillProducesSupabaseActions() throws Exception {
+        String token = register();
+        connectAll(token);
+        // Single-app repo using @supabase/supabase-js and no Postgres client, so the
+        // blueprint has Supabase as an external service, not a DATABASE component.
+        long projectId = importRepo(token, "demo/jobpilot-solo");
+
+        JsonNode plan = plan(token, projectId, CREATE_NEW_INPUTS);
+
+        // The Supabase creation actions must still be generated (regression: they were
+        // skipped when no DATABASE component was detected).
+        assertTrue(has(plan, "database.create"), "Supabase-only app must still get a create action");
+        assertTrue(has(plan, "database.wait"));
+        assertTrue(has(plan, "database.credentials"));
+
+        // No blocker asking the user for the managed Supabase keys.
+        for (JsonNode b : plan.path("blockers")) {
+            String s = b.asText().toUpperCase();
+            assertFalse(s.contains("SERVICE_ROLE"), "must not ask for the service-role key: " + b.asText());
+            assertFalse(s.contains("ANON_KEY"), "must not ask for the anon key: " + b.asText());
+        }
+        assertEquals("FROM_PREVIOUS_STEP", envItem(plan, "SUPABASE_SERVICE_ROLE_KEY").path("valueStatus").asText());
+        assertEquals("FROM_PREVIOUS_STEP", envItem(plan, "VITE_SUPABASE_ANON_KEY").path("valueStatus").asText());
+        // The anon key is public, not a secret, and routed to the frontend.
+        assertTrue(destination(plan, "VITE_SUPABASE_ANON_KEY").contains("Frontend"));
+        assertFalse(envItem(plan, "VITE_SUPABASE_ANON_KEY").path("secret").asBoolean(),
+            "anon key must not be classified as a secret");
+        assertTrue(plan.path("executable").asBoolean(), () -> "not executable, blockers=" + plan.path("blockers"));
+    }
+
     // ==================== plan-structure regression ====================
 
     @Test
