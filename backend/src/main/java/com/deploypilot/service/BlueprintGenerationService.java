@@ -40,6 +40,9 @@ public class BlueprintGenerationService {
     private static final Pattern CORS_NAME = Pattern.compile("(?i)^(frontend_url|cors_origin|allowed_origins?|client_url)$");
     private static final Pattern DB_VAR_NAME = Pattern.compile("(?i)^(database_|db_|postgres_|mongo(db)?_)");
     private static final Pattern GENERATABLE_SECRET = Pattern.compile("(?i)^(jwt_secret|session_secret|secret_key|app_secret|auth_secret)$");
+    // Intentionally public/publishable credentials (Supabase anon key, publishable keys) — never secrets.
+    private static final Pattern PUBLISHABLE_CREDENTIAL = Pattern.compile(
+        "(?i)(anon_key|anon_public_key|publishable_key|publishable_default_key)$");
 
     public BlueprintResult generate(StackDetectionResult analysis,
                                     Map<String, String> overrides,
@@ -263,6 +266,14 @@ public class BlueprintGenerationService {
 
     // ==================== environment variables ====================
 
+    /** Publishable/anon credentials are always public, regardless of a stale stored classification. */
+    private String effectiveClassification(String name, String stored) {
+        if (name != null && PUBLISHABLE_CREDENTIAL.matcher(name).find()) {
+            return "PUBLIC_PUBLISHABLE_CREDENTIAL";
+        }
+        return stored;
+    }
+
     private void mapEnvironmentVariables(StackDetectionResult analysis, BlueprintResult bp,
                                          Component frontend, Component backend, Component database) {
         Map<String, EnvVarFinding> unique = new LinkedHashMap<>();
@@ -272,7 +283,10 @@ public class BlueprintGenerationService {
         for (EnvVarFinding v : unique.values()) {
             EnvVarMapping m = new EnvVarMapping();
             m.setName(v.getName());
-            m.setClassification(v.getClassification());
+            // Re-derive publishable/anon credentials by name so a blueprint generated
+            // from an older analysis (which may have marked the anon key as a secret)
+            // is self-correcting: the anon key is public, never a secret blocker.
+            m.setClassification(effectiveClassification(v.getName(), v.getClassification()));
             m.setSourceEvidence(v.getSource());
 
             Component owner = ownerOf(v, frontend, backend);

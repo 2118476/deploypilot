@@ -337,6 +337,23 @@ class BlueprintGenerationServiceTest {
     }
 
     @Test
+    void staleAnonKeyClassificationIsSelfCorrected() {
+        // Simulate a blueprint generated from an OLDER analysis that mislabelled the
+        // anon key as a secret; the blueprint must re-classify it as public and NOT
+        // raise the "secret exposed through a public build variable" blocker.
+        StackDetectionResult a = supabaseAnalysis();
+        a.setEnvironmentVariables(new java.util.ArrayList<>(a.getEnvironmentVariables().stream()
+            .map(v -> v.getName().equals("VITE_SUPABASE_ANON_KEY")
+                ? env("VITE_SUPABASE_ANON_KEY", "SECRET_OR_SENSITIVE", ".env.example") : v)
+            .toList()));
+        BlueprintResult bp = service.generate(a, Map.of(), Map.of());
+        assertEquals("PUBLIC_PUBLISHABLE_CREDENTIAL", envVar(bp, "VITE_SUPABASE_ANON_KEY").getClassification());
+        assertTrue(bp.getFindings().stream().noneMatch(f ->
+            f.getSeverity().equals("BLOCKER") && f.getDetail().contains("VITE_SUPABASE_ANON_KEY")),
+            "stale secret classification must not produce a blocker");
+    }
+
+    @Test
     void publicPrefixedServiceRoleKeyStaysABlocker() {
         StackDetectionResult a = supabaseAnalysis();
         // a service role key wrongly exposed with a public prefix must still block

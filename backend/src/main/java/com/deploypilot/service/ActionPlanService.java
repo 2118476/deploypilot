@@ -108,6 +108,14 @@ public class ActionPlanService {
         BlueprintResult.Component frontend = componentOfType(bp, "FRONTEND");
         BlueprintResult.Component database = componentOfType(bp, "DATABASE");
 
+        // A Supabase-only app (e.g. @supabase/supabase-js with no separate Postgres
+        // client) has Supabase as an external service, not a detected DATABASE
+        // component. When the user explicitly chose a Supabase database, run the
+        // controlled Supabase path anyway using a synthesized database component.
+        if (database == null && DatabaseChoice.parse(request.getDatabaseChoice()) != DatabaseChoice.MANUAL) {
+            database = synthesizeSupabaseDatabase();
+        }
+
         List<PlannedAction> actions = new ArrayList<>();
         int[] order = {0};
 
@@ -571,6 +579,22 @@ public class ActionPlanService {
         return name == null ? "" : name.replaceAll("[^A-Za-z0-9 _.-]", "");
     }
 
+    private String shortReason(Exception e) {
+        String m = e.getMessage();
+        if (m == null || m.isBlank()) return e.getClass().getSimpleName();
+        return m.length() > 100 ? m.substring(0, 100) : m;
+    }
+
+    /** A stand-in DATABASE component for a Supabase-only app that has no detected Postgres component. */
+    private BlueprintResult.Component synthesizeSupabaseDatabase() {
+        BlueprintResult.Component c = new BlueprintResult.Component();
+        c.setId("database@supabase");
+        c.setType("DATABASE");
+        c.setName("Supabase");
+        c.setSelectedPlatform("Supabase");
+        return c;
+    }
+
     // ---------- helpers ----------
 
     private void resolveRepoState(BlueprintResult bp, ProviderConnection gitHub, Long userId,
@@ -578,15 +602,33 @@ public class ActionPlanService {
         String branch = requestedBranch;
         String commit = null;
         if (gitHub != null && notBlank(bp.getRepository())) {
+            ProviderCredential cred = safeGitHubCredential(userId);
+            RepositoryRef ref = null;
             try {
-                ProviderCredential cred = connectionService.requireCredential(userId, ProviderType.GITHUB);
-                RepositoryRef ref = RepositoryRef.parse(bp.getRepository());
-                var repo = providers.git().getRepository(cred, ref);
-                if (branch == null) branch = repo.defaultBranch();
-                commit = providers.git().getLatestCommit(cred, ref, branch).sha();
+                ref = RepositoryRef.parse(bp.getRepository());
             } catch (Exception e) {
-                log.debug("Could not resolve repo state for plan: {}", e.getMessage());
-                plan.getWarnings().add("Could not read the latest commit from GitHub; the plan will use the branch tip at execution time.");
+                log.warn("Unparseable repository '{}' for plan: {}", bp.getRepository(), e.getMessage());
+            }
+            if (cred != null && ref != null) {
+                // Resolve the default branch separately: reading repository metadata
+                // can fail (or need extra scopes) without blocking commit resolution.
+                if (branch == null) {
+                    try {
+                        branch = providers.git().getRepository(cred, ref).defaultBranch();
+                    } catch (Exception e) {
+                        log.warn("Could not read repository metadata for {}: {} — defaulting branch to main",
+                            ref.fullName(), e.toString());
+                        branch = "main";
+                    }
+                }
+                try {
+                    commit = providers.git().getLatestCommit(cred, ref, branch).sha();
+                } catch (Exception e) {
+                    log.warn("Could not resolve latest commit for {} on branch {}: {}",
+                        ref.fullName(), branch, e.toString());
+                    plan.getWarnings().add("Could not read the latest commit from GitHub (" + shortReason(e)
+                        + "); the plan will use the branch tip at execution time.");
+                }
             }
         }
         plan.setBranch(branch);
