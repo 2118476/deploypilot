@@ -47,6 +47,7 @@ public class ActionPlanService {
     private final AutomationSecretRepository secretRepository;
     private final ProviderRegistry providers;
     private final MigrationDiscoveryService migrationDiscoveryService;
+    private final com.deploypilot.repoaccess.RepositoryFileReaderFactory readerFactory;
 
     // Backend-only variables filled from the prepared Supabase project. These are
     // set on the backend host (Render) and never on the frontend host (Netlify).
@@ -64,13 +65,15 @@ public class ActionPlanService {
                              ConnectionService connectionService,
                              AutomationSecretRepository secretRepository,
                              ProviderRegistry providers,
-                             MigrationDiscoveryService migrationDiscoveryService) {
+                             MigrationDiscoveryService migrationDiscoveryService,
+                             com.deploypilot.repoaccess.RepositoryFileReaderFactory readerFactory) {
         this.projectRepository = projectRepository;
         this.blueprintService = blueprintService;
         this.connectionService = connectionService;
         this.secretRepository = secretRepository;
         this.providers = providers;
         this.migrationDiscoveryService = migrationDiscoveryService;
+        this.readerFactory = readerFactory;
     }
 
     public DeploymentActionPlan build(Long projectId, PlanRequest request) {
@@ -491,7 +494,7 @@ public class ActionPlanService {
 
         // Repository-owned schema/migrations are always detected and shown (checksum +
         // SQL-safety). Applying requires explicit confirmation; destructive SQL is blocked.
-        List<MigrationInfo> migrations = discoverMigrations(bp, plan.getBranch(), projectId, refForMigrations);
+        List<MigrationInfo> migrations = discoverMigrations(bp, plan.getBranch(), projectId, refForMigrations, userId);
         migrations.forEach(mi -> h.getMigrations().add(new DeploymentActionPlan.DatabaseHandoff.MigrationView(
             mi.name(), mi.checksum(), mi.order(), mi.previouslyApplied(), mi.destructive(), mi.safetyClassification(), mi.reason())));
         boolean anyDestructive = migrations.stream().anyMatch(MigrationInfo::destructive);
@@ -539,14 +542,28 @@ public class ActionPlanService {
         return fields.isEmpty() ? List.of("DATABASE_URL", "DATABASE_USERNAME", "DATABASE_PASSWORD") : fields;
     }
 
-    private List<MigrationInfo> discoverMigrations(BlueprintResult bp, String branch, Long projectId, String supabaseRef) {
+    private List<MigrationInfo> discoverMigrations(BlueprintResult bp, String branch, Long projectId,
+                                                   String supabaseRef, Long userId) {
         try {
             RepositoryRef ref = RepositoryRef.parse(bp.getRepository());
             String b = notBlank(branch) ? branch : "main";
-            return migrationDiscoveryService.discover(ref, b, projectId, supabaseRef);
+            // Read the repository with the connected user's GitHub credential, not
+            // only the server-level token, so private repositories are reachable.
+            ProviderCredential gitHubCredential = connectionService.findConnection(userId, ProviderType.GITHUB)
+                .map(c -> safeGitHubCredential(userId)).orElse(null);
+            var reader = readerFactory.forCredentialOrDefault(gitHubCredential);
+            return migrationDiscoveryService.discover(ref, b, projectId, supabaseRef, reader);
         } catch (Exception e) {
             log.debug("Migration discovery skipped: {}", e.getMessage());
             return List.of();
+        }
+    }
+
+    private ProviderCredential safeGitHubCredential(Long userId) {
+        try {
+            return connectionService.requireCredential(userId, ProviderType.GITHUB);
+        } catch (Exception e) {
+            return null;
         }
     }
 

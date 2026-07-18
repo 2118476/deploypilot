@@ -225,7 +225,7 @@ public class DeploymentExecutor {
             case "database.inspect" -> supabaseStep(() -> supabase.inspect(cred(creds, ProviderType.SUPABASE, userId), plan.getDatabase(), outputs));
             case "database.create" -> supabaseStep(() -> supabase.create(cred(creds, ProviderType.SUPABASE, userId), plan.getDatabase(), projectId, userId, outputs));
             case "database.wait" -> supabaseStep(() -> supabase.waitReady(cred(creds, ProviderType.SUPABASE, userId), outputs));
-            case "database.migrations.inspect" -> supabaseStep(() -> supabase.migrationsInspect(repoRef(plan), branchOf(plan), plan.getDatabase(), projectId, outputs));
+            case "database.migrations.inspect" -> supabaseStep(() -> supabase.migrationsInspect(repoRef(plan), branchOf(plan), plan.getDatabase(), projectId, userId, outputs));
             case "database.migrations.apply" -> supabaseStep(() -> supabase.migrationsApply(cred(creds, ProviderType.SUPABASE, userId), repoRef(plan), branchOf(plan), projectId, userId, outputs));
             case "database.credentials" -> supabaseStep(() -> supabase.credentials(cred(creds, ProviderType.SUPABASE, userId), projectId, userId, outputs));
             case "verify.database" -> supabaseStep(() -> supabase.verifyDatabase(cred(creds, ProviderType.SUPABASE, userId), outputs));

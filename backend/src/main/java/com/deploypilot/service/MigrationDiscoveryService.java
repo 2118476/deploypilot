@@ -50,11 +50,20 @@ public class MigrationDiscoveryService {
         this.appliedRepository = appliedRepository;
     }
 
-    /** Deterministically-ordered migration metadata for the repository. */
+    /** Deterministically-ordered migration metadata for the repository (server-level reader). */
     public List<MigrationInfo> discover(RepositoryRef ref, String branch, Long projectId, String supabaseProjectRef) {
+        return discover(ref, branch, projectId, supabaseProjectRef, fileReader);
+    }
+
+    /**
+     * Deterministically-ordered migration metadata, read through the supplied
+     * reader (typically scoped to the connected user's GitHub credential).
+     */
+    public List<MigrationInfo> discover(RepositoryRef ref, String branch, Long projectId,
+                                        String supabaseProjectRef, RepositoryFileReader reader) {
         List<RepositoryFileEntry> all;
         try {
-            all = fileReader.listFiles(ref, branch).entries();
+            all = reader.listFiles(ref, branch).entries();
         } catch (Exception e) {
             log.debug("Migration discovery could not list files: {}", e.getMessage());
             return List.of();
@@ -71,7 +80,7 @@ public class MigrationDiscoveryService {
             if (order >= MAX_MIGRATION_FILES) break;
             String sql;
             try {
-                sql = fileReader.readTextFile(ref, branch, path, MAX_MIGRATION_BYTES);
+                sql = reader.readTextFile(ref, branch, path, MAX_MIGRATION_BYTES);
             } catch (Exception e) {
                 log.debug("Could not read migration {}: {}", path, e.getMessage());
                 continue;
@@ -87,9 +96,14 @@ public class MigrationDiscoveryService {
         return out;
     }
 
-    /** Reads the SQL for one migration file at apply time (bounded). */
+    /** Reads the SQL for one migration file at apply time (bounded, server-level reader). */
     public String readMigrationSql(RepositoryRef ref, String branch, String path) {
-        return fileReader.readTextFile(ref, branch, path, MAX_MIGRATION_BYTES);
+        return readMigrationSql(ref, branch, path, fileReader);
+    }
+
+    /** Reads the SQL for one migration file through the supplied (user-scoped) reader. */
+    public String readMigrationSql(RepositoryRef ref, String branch, String path, RepositoryFileReader reader) {
+        return reader.readTextFile(ref, branch, path, MAX_MIGRATION_BYTES);
     }
 
     private boolean isPreviouslyApplied(Long projectId, String supabaseProjectRef, String name, String checksum) {

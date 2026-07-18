@@ -43,6 +43,8 @@ public class SupabaseDeploymentCollaborator {
     private final SecretService secretService;
     private final MigrationDiscoveryService migrationDiscovery;
     private final AppliedDatabaseMigrationRepository appliedRepository;
+    private final ConnectionService connectionService;
+    private final com.deploypilot.repoaccess.RepositoryFileReaderFactory readerFactory;
     private final SecureRandom random = new SecureRandom();
     private final long pollIntervalMs;
     private final int pollMaxAttempts;
@@ -51,14 +53,31 @@ public class SupabaseDeploymentCollaborator {
                                           SecretService secretService,
                                           MigrationDiscoveryService migrationDiscovery,
                                           AppliedDatabaseMigrationRepository appliedRepository,
+                                          ConnectionService connectionService,
+                                          com.deploypilot.repoaccess.RepositoryFileReaderFactory readerFactory,
                                           @Value("${deploypilot.automation.poll-interval-ms:2000}") long pollIntervalMs,
                                           @Value("${deploypilot.automation.poll-max-attempts:60}") int pollMaxAttempts) {
         this.providers = providers;
         this.secretService = secretService;
         this.migrationDiscovery = migrationDiscovery;
         this.appliedRepository = appliedRepository;
+        this.connectionService = connectionService;
+        this.readerFactory = readerFactory;
         this.pollIntervalMs = pollIntervalMs;
         this.pollMaxAttempts = pollMaxAttempts;
+    }
+
+    /** A repository reader scoped to the user's connected GitHub credential (server token fallback). */
+    private com.deploypilot.repoaccess.RepositoryFileReader gitHubReader(Long userId) {
+        ProviderCredential cred = null;
+        if (userId != null && connectionService.findConnection(userId, ProviderType.GITHUB).isPresent()) {
+            try {
+                cred = connectionService.requireCredential(userId, ProviderType.GITHUB);
+            } catch (Exception ignored) {
+                // fall back to the server-level token
+            }
+        }
+        return readerFactory.forCredentialOrDefault(cred);
     }
 
     /** Reuse an existing selected project (read-only). */
@@ -102,8 +121,10 @@ public class SupabaseDeploymentCollaborator {
         return "Supabase project is active and healthy.";
     }
 
-    public String migrationsInspect(RepositoryRef repoRef, String branch, DatabaseHandoff db, Long projectId, Map<String, String> outputs) {
-        List<MigrationInfo> migrations = migrationDiscovery.discover(repoRef, branch, projectId, outputs.get(OUT_SUPABASE_REF));
+    public String migrationsInspect(RepositoryRef repoRef, String branch, DatabaseHandoff db, Long projectId,
+                                    Long userId, Map<String, String> outputs) {
+        List<MigrationInfo> migrations = migrationDiscovery.discover(repoRef, branch, projectId,
+            outputs.get(OUT_SUPABASE_REF), gitHubReader(userId));
         long destructive = migrations.stream().filter(MigrationInfo::destructive).count();
         outputs.put(OUT_MIGRATION_STATUS, migrations.size() + " reviewed");
         return "Reviewed " + migrations.size() + " repository migration(s)"
@@ -114,7 +135,8 @@ public class SupabaseDeploymentCollaborator {
     public String migrationsApply(ProviderCredential cred, RepositoryRef repoRef, String branch,
                                   Long projectId, Long userId, Map<String, String> outputs) {
         String ref = requireRef(outputs);
-        List<MigrationInfo> migrations = migrationDiscovery.discover(repoRef, branch, projectId, ref);
+        com.deploypilot.repoaccess.RepositoryFileReader reader = gitHubReader(userId);
+        List<MigrationInfo> migrations = migrationDiscovery.discover(repoRef, branch, projectId, ref, reader);
         int applied = 0, skipped = 0, count = 0;
         for (MigrationInfo m : migrations) {
             if (count++ >= MAX_APPLY) break;
@@ -129,7 +151,7 @@ public class SupabaseDeploymentCollaborator {
                 skipped++;
                 continue; // checksum matches -> do not reapply
             }
-            String sql = migrationDiscovery.readMigrationSql(repoRef, branch, m.path());
+            String sql = migrationDiscovery.readMigrationSql(repoRef, branch, m.path(), reader);
             // Re-verify safety on the exact SQL we are about to run.
             if (MigrationSafety.detect(sql).destructive()) {
                 skipped++;
