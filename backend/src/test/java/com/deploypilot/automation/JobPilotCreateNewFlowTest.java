@@ -61,6 +61,41 @@ class JobPilotCreateNewFlowTest {
         + "\"supabaseOrgId\":\"org-1\",\"supabaseProjectName\":\"jobpilot-db\",\"supabaseRegion\":\"us-east-1\","
         + "\"applyMigrations\":true}";
 
+    // The value the UI/clients actually send for "Create new".
+    private static final String CREATE_NEW_INPUTS =
+        "{\"mode\":\"DEPLOY_FOR_ME\",\"databaseChoice\":\"CREATE_NEW\","
+        + "\"supabaseOrgId\":\"org-1\",\"supabaseProjectName\":\"jobpilot-db\",\"supabaseRegion\":\"us-east-1\","
+        + "\"applyMigrations\":true}";
+
+    // ==================== CREATE_NEW literal is recognised ====================
+
+    @Test
+    void createNewLiteralProducesSupabaseActionsAndNoUserSecretPrompt() throws Exception {
+        String token = register();
+        connectAll(token);
+        long projectId = importRepo(token, "demo/jobpilot");
+
+        JsonNode plan = plan(token, projectId, CREATE_NEW_INPUTS);
+
+        // 1 & 2: the Supabase creation action exists and the plan is not blocked.
+        assertEquals("CREATE_SUPABASE_PROJECT", plan.path("database").path("choice").asText(),
+            "CREATE_NEW must map to the create-project choice");
+        assertTrue(has(plan, "database.create"), "CREATE_NEW must produce a Supabase creation action");
+        assertTrue(has(plan, "database.wait"));
+        assertTrue(has(plan, "database.credentials"));
+        assertTrue(plan.path("executable").asBoolean(), () -> "not executable, blockers=" + plan.path("blockers"));
+
+        // 3: the service-role key and anon key are NOT requested from the user.
+        for (JsonNode b : plan.path("blockers")) {
+            String s = b.asText().toUpperCase();
+            assertFalse(s.contains("SERVICE_ROLE"), "must not ask for the service-role key");
+            assertFalse(s.contains("ANON_KEY"), "must not ask for the anon key");
+        }
+        // 5: they are outputs of the creation step, marked FROM_PREVIOUS_STEP.
+        assertEquals("FROM_PREVIOUS_STEP", envItem(plan, "SUPABASE_SERVICE_ROLE_KEY").path("valueStatus").asText());
+        assertEquals("FROM_PREVIOUS_STEP", envItem(plan, "VITE_SUPABASE_ANON_KEY").path("valueStatus").asText());
+    }
+
     // ==================== plan-structure regression ====================
 
     @Test

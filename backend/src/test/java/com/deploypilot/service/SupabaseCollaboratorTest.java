@@ -8,6 +8,8 @@ import com.deploypilot.provider.ProviderCredential;
 import com.deploypilot.provider.ProviderException;
 import com.deploypilot.provider.ProviderRegistry;
 import com.deploypilot.provider.model.*;
+import com.deploypilot.repoaccess.RepositoryFileReader;
+import com.deploypilot.repoaccess.RepositoryFileReaderFactory;
 import com.deploypilot.repoaccess.RepositoryRef;
 import com.deploypilot.repository.AppliedDatabaseMigrationRepository;
 import org.junit.jupiter.api.BeforeEach;
@@ -46,7 +48,12 @@ class SupabaseCollaboratorTest {
         secretService = mock(SecretService.class);
         migrationDiscovery = mock(MigrationDiscoveryService.class);
         appliedRepo = mock(AppliedDatabaseMigrationRepository.class);
-        collaborator = new SupabaseDeploymentCollaborator(providers, secretService, migrationDiscovery, appliedRepo, 5, 3);
+        ConnectionService connectionService = mock(ConnectionService.class);
+        when(connectionService.findConnection(anyLong(), any())).thenReturn(Optional.empty());
+        RepositoryFileReaderFactory readerFactory = mock(RepositoryFileReaderFactory.class);
+        when(readerFactory.forCredentialOrDefault(any())).thenReturn(mock(RepositoryFileReader.class));
+        collaborator = new SupabaseDeploymentCollaborator(providers, secretService, migrationDiscovery, appliedRepo,
+            connectionService, readerFactory, 5, 3);
     }
 
     private DatabaseHandoff createHandoff() {
@@ -87,7 +94,7 @@ class SupabaseCollaboratorTest {
     void destructiveMigrationsAreNeverApplied() {
         Map<String, String> outputs = new HashMap<>();
         outputs.put("supabaseProjectRef", "proj-1");
-        when(migrationDiscovery.discover(any(), any(), anyLong(), any())).thenReturn(List.of(
+        when(migrationDiscovery.discover(any(), any(), anyLong(), any(), any())).thenReturn(List.of(
             new MigrationInfo("001_drop.sql", "supabase/migrations/001_drop.sql", "chk1", 1, false, true,
                 MigrationInfo.POTENTIALLY_DESTRUCTIVE, "Contains DROP TABLE")));
 
@@ -101,7 +108,7 @@ class SupabaseCollaboratorTest {
         outputs.put("supabaseProjectRef", "proj-1");
         MigrationInfo m = new MigrationInfo("001_init.sql", "supabase/migrations/001_init.sql", "chkA", 1, false, false,
             MigrationInfo.SAFE, null);
-        when(migrationDiscovery.discover(any(), any(), anyLong(), any())).thenReturn(List.of(m));
+        when(migrationDiscovery.discover(any(), any(), anyLong(), any(), any())).thenReturn(List.of(m));
 
         // Already applied with the SAME checksum -> skipped.
         AppliedDatabaseMigration applied = new AppliedDatabaseMigration();
@@ -114,7 +121,7 @@ class SupabaseCollaboratorTest {
         // Not applied yet -> applied once and recorded.
         when(appliedRepo.findByProjectIdAndSupabaseProjectRefAndMigrationName(1L, "proj-1", "001_init.sql"))
             .thenReturn(Optional.empty());
-        when(migrationDiscovery.readMigrationSql(any(), any(), any())).thenReturn("CREATE TABLE t (id int);");
+        when(migrationDiscovery.readMigrationSql(any(), any(), any(), any())).thenReturn("CREATE TABLE t (id int);");
         when(db.applyMigration(any(), eq("proj-1"), eq("001_init.sql"), any()))
             .thenReturn(new MigrationResult("001_init.sql", true, "Applied."));
         collaborator.migrationsApply(cred, RepositoryRef.parse("demo/repo"), "main", 1L, 1L, outputs);
