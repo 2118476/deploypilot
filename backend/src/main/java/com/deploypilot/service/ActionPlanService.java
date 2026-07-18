@@ -455,6 +455,11 @@ public class ActionPlanService {
         }
 
         // ----- controlled Supabase automation -----
+        // The connection comes from the managed Supabase project, so no manual
+        // connection fields are needed (and no "connection needed" hint applies).
+        h.setRequiredFields(List.of());
+        h.setConnectionSupplied(true);
+
         String account = label(connections, ProviderType.SUPABASE);
         String lastDbActionId;
         String refForMigrations = null;
@@ -579,6 +584,12 @@ public class ActionPlanService {
         return name == null ? "" : name.replaceAll("[^A-Za-z0-9 _.-]", "");
     }
 
+    private void warnCommitUnresolved(DeploymentActionPlan plan, String repo, String branch, Exception e) {
+        log.warn("Could not resolve latest commit for {} on branch {}: {}", repo, branch, e.toString());
+        plan.getWarnings().add("Could not read the latest commit from GitHub (" + shortReason(e)
+            + "); the plan will use the branch tip at execution time.");
+    }
+
     private String shortReason(Exception e) {
         String m = e.getMessage();
         if (m == null || m.isBlank()) return e.getClass().getSimpleName();
@@ -610,24 +621,46 @@ public class ActionPlanService {
                 log.warn("Unparseable repository '{}' for plan: {}", bp.getRepository(), e.getMessage());
             }
             if (cred != null && ref != null) {
+                boolean repoInaccessible = false;
                 // Resolve the default branch separately: reading repository metadata
                 // can fail (or need extra scopes) without blocking commit resolution.
                 if (branch == null) {
                     try {
                         branch = providers.git().getRepository(cred, ref).defaultBranch();
+                    } catch (com.deploypilot.provider.ProviderException.NotFound e) {
+                        // The token cannot see the repository at all — a branch lookup
+                        // would only produce a misleading "branch not found".
+                        repoInaccessible = true;
+                        branch = "main";
+                        log.warn("GitHub token cannot access {}: {}", ref.fullName(), e.getMessage());
+                        plan.getWarnings().add("Your GitHub connection cannot access " + ref.fullName()
+                            + ". Reconnect GitHub with a token that includes this repository (fine-grained tokens "
+                            + "must explicitly grant it), then regenerate the plan to pin the exact commit.");
                     } catch (Exception e) {
                         log.warn("Could not read repository metadata for {}: {} — defaulting branch to main",
                             ref.fullName(), e.toString());
                         branch = "main";
                     }
                 }
-                try {
-                    commit = providers.git().getLatestCommit(cred, ref, branch).sha();
-                } catch (Exception e) {
-                    log.warn("Could not resolve latest commit for {} on branch {}: {}",
-                        ref.fullName(), branch, e.toString());
-                    plan.getWarnings().add("Could not read the latest commit from GitHub (" + shortReason(e)
-                        + "); the plan will use the branch tip at execution time.");
+                if (!repoInaccessible) {
+                    boolean branchWasGuessed = requestedBranch == null;
+                    try {
+                        commit = providers.git().getLatestCommit(cred, ref, branch).sha();
+                    } catch (com.deploypilot.provider.ProviderException.NotFound e) {
+                        // A guessed "main" may simply be wrong — try the other common default.
+                        if (branchWasGuessed && "main".equals(branch)) {
+                            try {
+                                commit = providers.git().getLatestCommit(cred, ref, "master").sha();
+                                branch = "master";
+                            } catch (Exception retry) {
+                                warnCommitUnresolved(plan, ref.fullName(), branch, e);
+                            }
+                        } else {
+                            warnCommitUnresolved(plan, ref.fullName(), branch, e);
+                        }
+                    } catch (Exception e) {
+                        warnCommitUnresolved(plan, ref.fullName(), branch, e);
+                    }
                 }
             }
         }

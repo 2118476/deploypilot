@@ -378,9 +378,11 @@ function PlanView({ plan, mode, confirmation, onConfirm, confirming, confirmErro
         <div className="card p-4">
           <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100 flex items-center gap-2 mb-1"><Database className="w-4 h-4 text-primary-600" /> Database</h3>
           <p className="text-sm text-slate-600 dark:text-slate-300">{plan.database.instructions}</p>
-          <p className="text-xs mt-1"><span className={`badge ${plan.database.connectionSupplied ? 'badge-green' : 'badge-amber'}`}>
-            {plan.database.connectionSupplied ? 'Connection supplied' : 'Connection needed'}</span>
-            <span className="text-slate-500 ml-2">Fields: {plan.database.requiredFields.join(', ')}</span></p>
+          {plan.database.requiredFields.length > 0 && (
+            <p className="text-xs mt-1"><span className={`badge ${plan.database.connectionSupplied ? 'badge-green' : 'badge-amber'}`}>
+              {plan.database.connectionSupplied ? 'Connection supplied' : 'Connection needed'}</span>
+              <span className="text-slate-500 ml-2">Fields: {plan.database.requiredFields.join(', ')}</span></p>
+          )}
         </div>
       )}
 
