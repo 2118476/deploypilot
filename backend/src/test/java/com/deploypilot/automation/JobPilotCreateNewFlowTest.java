@@ -129,6 +129,55 @@ class JobPilotCreateNewFlowTest {
         assertTrue(plan.path("executable").asBoolean(), () -> "not executable, blockers=" + plan.path("blockers"));
     }
 
+    // ==================== managed Supabase needs no manual connection fields ====================
+
+    @Test
+    void managedSupabaseHasNoConnectionNeededFields() throws Exception {
+        String token = register();
+        connectAll(token);
+        long projectId = importRepo(token, "demo/jobpilot-solo");
+
+        JsonNode plan = plan(token, projectId, CREATE_NEW_INPUTS);
+        assertEquals(0, plan.path("database").path("requiredFields").size(),
+            "managed Supabase must not ask for manual connection fields");
+        assertTrue(plan.path("database").path("connectionSupplied").asBoolean(),
+            "connection comes from the managed project");
+    }
+
+    // ==================== GitHub repo-state diagnostics ====================
+
+    @Test
+    void inaccessibleRepoWarnsAboutTokenAccessNotBranch() throws Exception {
+        String token = register();
+        connectAll(token);
+        long projectId = importRepo(token, "demo/jobpilot-solo");
+        MOCK.setGitHubRepoInaccessible(true);
+
+        JsonNode plan = plan(token, projectId, CREATE_NEW_INPUTS);
+        boolean accessWarning = false;
+        for (JsonNode w : plan.path("warnings")) {
+            String s = w.asText();
+            assertFalse(s.contains("Branch not found"),
+                "an inaccessible repo must not be reported as a missing branch: " + s);
+            if (s.contains("cannot access")) accessWarning = true;
+        }
+        assertTrue(accessWarning, "should tell the user their GitHub token cannot access the repository");
+        assertTrue(plan.path("commitSha").isNull() || plan.path("commitSha").asText().isBlank());
+    }
+
+    @Test
+    void guessedMainBranchFallsBackToMaster() throws Exception {
+        String token = register();
+        connectAll(token);
+        long projectId = importRepo(token, "demo/jobpilot-solo");
+        MOCK.setGitHubMetadataFailure(true); // metadata 500s; real default branch is master
+
+        JsonNode plan = plan(token, projectId, CREATE_NEW_INPUTS);
+        assertEquals("master", plan.path("branch").asText(), "should fall back from guessed main to master");
+        assertTrue(plan.path("commitSha").asText().startsWith("mastercommitsha"),
+            "commit should resolve from the master branch");
+    }
+
     // ==================== plan-structure regression ====================
 
     @Test

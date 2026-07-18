@@ -40,6 +40,8 @@ public class MockProviderServer implements AutoCloseable {
     private int supabaseSeq = 0;
     // When true, GitHub reports the config files already match (no PR needed).
     private volatile boolean gitHubFilesAlreadyPresent = false;
+    private volatile boolean gitHubRepoInaccessible = false;   // token cannot see the repo at all
+    private volatile boolean gitHubMetadataFailure = false;    // repo metadata 500s; default branch is master
     // Supabase simulation switches.
     public static final String SUPABASE_SERVICE_ROLE_MARKER = "service-role-SECRET-key";
     private volatile boolean supabaseBillingRequired = false;
@@ -89,6 +91,8 @@ public class MockProviderServer implements AutoCloseable {
         return requests.stream().filter(r -> r.path().startsWith(pathPrefix)).toList();
     }
     public void setGitHubFilesAlreadyPresent(boolean present) { this.gitHubFilesAlreadyPresent = present; }
+    public void setGitHubRepoInaccessible(boolean v) { this.gitHubRepoInaccessible = v; }
+    public void setGitHubMetadataFailure(boolean v) { this.gitHubMetadataFailure = v; }
     /** Clears only the recorded requests, keeping provider state (created sites/services). */
     public void clearRequests() { requests.clear(); }
     /** Full reset: requests and provider state. */
@@ -101,6 +105,8 @@ public class MockProviderServer implements AutoCloseable {
         renderSeq = 0;
         supabaseSeq = 0;
         gitHubFilesAlreadyPresent = false;
+        gitHubRepoInaccessible = false;
+        gitHubMetadataFailure = false;
         supabaseBillingRequired = false;
         supabaseQueryFail = false;
         supabaseRateLimitRemaining = 0;
@@ -131,6 +137,22 @@ public class MockProviderServer implements AutoCloseable {
     // ---------- GitHub ----------
 
     private void handleGitHub(HttpExchange ex, String method, String p, String body) throws IOException {
+        if (gitHubRepoInaccessible && p.startsWith("/repos/")) {
+            json(ex, 404, "{\"message\":\"Not Found\"}");
+            return;
+        }
+        if (gitHubMetadataFailure) {
+            if (p.matches("/repos/[^/]+/[^/]+")) { json(ex, 500, "{\"message\":\"boom\"}"); return; }
+            boolean mainRef = p.endsWith("/git/ref/heads/main") || p.endsWith("/branches/main") || p.endsWith("/commits/main");
+            boolean masterRef = p.endsWith("/git/ref/heads/master") || p.endsWith("/branches/master") || p.endsWith("/commits/master");
+            if (mainRef) { json(ex, 404, "{\"message\":\"Not Found\"}"); return; }
+            if (masterRef) {
+                if (p.contains("/git/ref/")) json(ex, 200, "{\"object\":{\"sha\":\"mastercommitsha000000000000000000000000\"}}");
+                else if (p.contains("/commits/")) json(ex, 200, "{\"sha\":\"mastercommitsha000000000000000000000000\"}");
+                else json(ex, 200, "{\"commit\":{\"sha\":\"mastercommitsha000000000000000000000000\"}}");
+                return;
+            }
+        }
         if (p.equals("/user")) {
             json(ex, 200, "{\"login\":\"octo-user\",\"id\":42}");
         } else if (p.equals("/user/repos")) {
