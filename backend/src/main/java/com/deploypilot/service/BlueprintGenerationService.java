@@ -172,8 +172,15 @@ public class BlueprintGenerationService {
             c.setRuntime(detectionNameAt(analysis, "LANGUAGE", d.getPath()));
             c.setBuildCommand(commandFor(analysis.getBuildCommands(), d.getPath()));
             c.setStartCommand(commandFor(analysis.getStartCommands(), d.getPath()));
-            c.setHealthCheckPath(null);
-            c.getNotes().add("Configure a health-check path on the hosting platform once you know your API's health endpoint.");
+            String detectedHealthPath = detections(analysis, "HEALTH_ENDPOINT").stream()
+                .map(Detection::getName).findFirst().orElse(null);
+            c.setHealthCheckPath(detectedHealthPath);
+            if (detectedHealthPath != null) {
+                c.getNotes().add("Detected health route " + detectedHealthPath
+                    + " — set this as the hosting platform's health-check path.");
+            } else {
+                c.getNotes().add("Configure a health-check path on the hosting platform once you know your API's health endpoint.");
+            }
             if (hasDocker) {
                 c.getNotes().add("A Dockerfile was detected; deploying as a Docker service is recommended.");
             }
@@ -281,7 +288,12 @@ public class BlueprintGenerationService {
         String source = v.getSource() == null ? "" : v.getSource();
         if (frontend != null && !frontend.getPath().isEmpty() && source.startsWith(frontend.getPath() + "/")) return frontend;
         if (backend != null && !backend.getPath().isEmpty() && source.startsWith(backend.getPath() + "/")) return backend;
-        if (PUBLIC_PREFIX.matcher(v.getName()).find() && frontend != null) return frontend;
+        // Non-public Supabase vars (SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY) are
+        // backend-only; the VITE_/NEXT_PUBLIC_ variants belong to the frontend.
+        boolean isSupabase = v.getName().toUpperCase().contains("SUPABASE");
+        boolean isPublic = PUBLIC_PREFIX.matcher(v.getName()).find();
+        if (isSupabase && !isPublic && backend != null) return backend;
+        if (isPublic && frontend != null) return frontend;
         if (source.contains("application.yml") || source.contains("application.properties")) return backend;
         return backend != null ? backend : frontend;
     }
@@ -325,8 +337,26 @@ public class BlueprintGenerationService {
             m.setValueSource("Static value you choose, e.g. prod");
             m.setExpectedFormat("prod");
             m.setRequired(springBackend ? Boolean.TRUE : null);
-        } else if (name.matches("(?i)^supabase_")) {
-            m.setValueSource("Supabase project settings");
+        } else if (name.toUpperCase().contains("SUPABASE")) {
+            // Frontend uses VITE_SUPABASE_URL + VITE_SUPABASE_ANON_KEY (public);
+            // backend uses SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY (secret).
+            if ("PUBLIC_PUBLISHABLE_CREDENTIAL".equals(m.getClassification())) {
+                m.setValueSource("Supabase publishable anon key (public, safe in the browser when Row Level Security "
+                    + "is enabled) — Supabase dashboard -> Project Settings -> API");
+                m.setExpectedFormat("Publishable anon key from Supabase");
+            } else if (name.matches("(?i).*service_role.*")) {
+                m.setValueSource("Supabase service role key (secret, backend-only — never expose to the browser) — "
+                    + "Supabase dashboard -> Project Settings -> API");
+                m.setExpectedFormat("Service role key from Supabase");
+                m.setRequired(Boolean.TRUE);
+            } else if (name.matches("(?i).*supabase_url$")) {
+                boolean isPublic = PUBLIC_PREFIX.matcher(name).find();
+                m.setValueSource((isPublic ? "Supabase project URL (public)" : "Supabase project URL")
+                    + " — Supabase dashboard -> Project Settings -> API");
+                m.setExpectedFormat("https://<project-ref>.supabase.co");
+            } else {
+                m.setValueSource("Supabase project settings");
+            }
         } else if (name.matches("(?i)^firebase_")) {
             m.setValueSource("Firebase console");
         } else if (name.matches("(?i)(api_key|token|secret|password)")) {
@@ -363,16 +393,33 @@ public class BlueprintGenerationService {
             bp.getRelationships().add(new Relationship(backend.getId(), frontend.getId(),
                 "Allows the frontend origin (CORS) through " + corsVar.getName(), corsVar.getName()));
         }
-        if (backend != null) {
-            for (Detection svc : detections(analysis, "EXTERNAL_SERVICE")) {
-                if ("Flyway migrations".equals(svc.getName())) continue;
-                String var = bp.getEnvironmentVariables().stream()
+        for (Detection svc : detections(analysis, "EXTERNAL_SERVICE")) {
+            if ("Flyway migrations".equals(svc.getName())) continue;
+            String key = svc.getName().toUpperCase().split(" ")[0];
+            String serviceId = "service@" + svc.getName().toLowerCase().replace(' ', '-');
+            // Backend uses only non-public vars for this service (e.g. SUPABASE_URL,
+            // SUPABASE_SERVICE_ROLE_KEY) — never a public VITE_/NEXT_PUBLIC_ variable.
+            if (backend != null) {
+                String backendVar = bp.getEnvironmentVariables().stream()
                     .map(EnvVarMapping::getName)
-                    .filter(n -> n.toUpperCase().contains(svc.getName().toUpperCase().split(" ")[0]))
+                    .filter(n -> n.toUpperCase().contains(key))
+                    .filter(n -> !PUBLIC_PREFIX.matcher(n).find())
                     .findFirst().orElse(null);
-                bp.getRelationships().add(new Relationship(backend.getId(),
-                    "service@" + svc.getName().toLowerCase().replace(' ', '-'),
-                    "Uses " + svc.getName() + (var != null ? " via " + var : ""), var));
+                bp.getRelationships().add(new Relationship(backend.getId(), serviceId,
+                    "Uses " + svc.getName() + (backendVar != null ? " via " + backendVar : ""), backendVar));
+            }
+            // Supabase also has a browser client, wired with the public frontend vars.
+            if (frontend != null && "Supabase".equals(svc.getName())) {
+                String frontendVar = bp.getEnvironmentVariables().stream()
+                    .map(EnvVarMapping::getName)
+                    .filter(n -> n.toUpperCase().contains("SUPABASE"))
+                    .filter(n -> PUBLIC_PREFIX.matcher(n).find())
+                    .findFirst().orElse(null);
+                if (frontendVar != null) {
+                    bp.getRelationships().add(new Relationship(frontend.getId(), serviceId,
+                        "Frontend uses the Supabase browser client via public "
+                            + "VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY", frontendVar));
+                }
             }
         }
     }
@@ -482,11 +529,34 @@ public class BlueprintGenerationService {
                 "Flyway was detected; schema migrations apply automatically when the backend starts against the production database.",
                 "flyway-core dependency detected", null, null, false));
         }
+        // A Supabase publishable/anon key in the browser is fine ONLY with Row Level Security on.
+        EnvVarMapping anonKey = bp.getEnvironmentVariables().stream()
+            .filter(v -> "PUBLIC_PUBLISHABLE_CREDENTIAL".equals(v.getClassification()))
+            .filter(v -> v.getName().toUpperCase().contains("SUPABASE") || v.getName().toUpperCase().contains("ANON"))
+            .findFirst().orElse(null);
+        if (anonKey != null) {
+            bp.getFindings().add(finding("INFORMATIONAL", "Supabase anon key is public — enable Row Level Security",
+                anonKey.getName() + " is a publishable key that Supabase browser clients require. It is safe to ship "
+                    + "in the frontend ONLY if Row Level Security (RLS) is enabled on every table it can reach; "
+                    + "without RLS, anyone with this key can read or write your data.",
+                "Found publishable credential " + anonKey.getName() + " in " + anonKey.getSourceEvidence(), null,
+                "In the Supabase dashboard, enable RLS on all exposed tables and add policies before going live. "
+                    + "Keep SUPABASE_SERVICE_ROLE_KEY backend-only — never expose it to the browser.",
+                false));
+        }
         for (Component b : backends) {
-            bp.getFindings().add(finding("INFORMATIONAL", "Configure a health-check path",
-                "A health-check path could not be detected for " + label(b) + ". Hosting platforms use it to know the service is up.",
-                "No health endpoint evidence available from analysis", null,
-                "Set the platform's health-check path to your API's health endpoint once deployed.", false));
+            if (b.getHealthCheckPath() != null) {
+                bp.getFindings().add(finding("INFORMATIONAL", "Health-check path detected",
+                    "A health route (" + b.getHealthCheckPath() + ") was detected for " + label(b)
+                        + ". Hosting platforms use it to know the service is up.",
+                    "Express health route in the analysed source", null,
+                    "Set " + b.getSelectedPlatform() + "'s health-check path to " + b.getHealthCheckPath() + ".", false));
+            } else {
+                bp.getFindings().add(finding("INFORMATIONAL", "Configure a health-check path",
+                    "A health-check path could not be detected for " + label(b) + ". Hosting platforms use it to know the service is up.",
+                    "No health endpoint evidence available from analysis", null,
+                    "Set the platform's health-check path to your API's health endpoint once deployed.", false));
+            }
         }
     }
 
@@ -618,7 +688,11 @@ public class BlueprintGenerationService {
                 render.append("    env: docker  # add the suggested Dockerfile first\n    dockerfilePath: ")
                     .append(dockerPath).append("\n");
             }
-            render.append("    healthCheckPath: <your health endpoint, e.g. /api/health>\n    envVars:\n");
+            render.append("    healthCheckPath: ")
+                .append(backend.getHealthCheckPath() != null
+                    ? backend.getHealthCheckPath()
+                    : "<your health endpoint, e.g. /api/health>")
+                .append("\n    envVars:\n");
             bp.getEnvironmentVariables().stream()
                 .filter(v -> backend.getId().equals(v.getComponentId()))
                 .filter(v -> !"Set automatically by the hosting platform — do not configure manually".equals(v.getValueSource()))

@@ -145,4 +145,85 @@ class StackDetectionServiceTest {
             List.of(), List.of());
         assertTrue(result.getWarnings().stream().anyMatch(w -> w.contains("package.json")));
     }
+
+    // ---- regression: Supabase anon key is publishable, not a secret (Fix 1) ----
+
+    private EnvVarFinding env(StackDetectionResult r, String name) {
+        return r.getEnvironmentVariables().stream()
+            .filter(v -> v.getName().equals(name)).findFirst().orElse(null);
+    }
+
+    @Test
+    void classifiesSupabaseAnonKeyAsPublishableNotSecret() {
+        String env = String.join("\n",
+            "VITE_SUPABASE_URL=https://x.supabase.co",
+            "VITE_SUPABASE_ANON_KEY=public-anon-key",
+            "SUPABASE_SERVICE_ROLE_KEY=super-secret",
+            "DATABASE_PASSWORD=hunter2");
+        StackDetectionResult r = service.detect("demo/app",
+            List.of(".env.example"), Map.of(".env.example", env), List.of(), List.of());
+
+        assertEquals("PUBLIC_PUBLISHABLE_CREDENTIAL", env(r, "VITE_SUPABASE_ANON_KEY").getClassification());
+        // the service role key and DB password stay secrets
+        assertEquals("SECRET_OR_SENSITIVE", env(r, "SUPABASE_SERVICE_ROLE_KEY").getClassification());
+        assertEquals("SECRET_OR_SENSITIVE", env(r, "DATABASE_PASSWORD").getClassification());
+        // the URL is public config, not a credential
+        assertEquals("PUBLIC_CONFIGURATION", env(r, "VITE_SUPABASE_URL").getClassification());
+    }
+
+    @Test
+    void plainSupabaseAnonKeyIsAlsoPublishable() {
+        StackDetectionResult r = service.detect("demo/app",
+            List.of(".env.example"),
+            Map.of(".env.example", "SUPABASE_ANON_KEY=anon\nNEXT_PUBLIC_SUPABASE_ANON_KEY=anon2"),
+            List.of(), List.of());
+        assertEquals("PUBLIC_PUBLISHABLE_CREDENTIAL", env(r, "SUPABASE_ANON_KEY").getClassification());
+        assertEquals("PUBLIC_PUBLISHABLE_CREDENTIAL", env(r, "NEXT_PUBLIC_SUPABASE_ANON_KEY").getClassification());
+    }
+
+    // ---- regression: Express health-route detection (Fix 2) ----
+
+    private static final String EXPRESS_PACKAGE_JSON = """
+        {
+          "scripts": { "start": "node server.js" },
+          "dependencies": { "express": "^4.19.0" }
+        }
+        """;
+
+    @Test
+    void detectsDirectExpressHealthRoute() {
+        String server = "const app = require('express')();\n"
+            + "app.get('/api/health', (req, res) => res.json({status:'ok'}));\n"
+            + "app.listen(3000);\n";
+        StackDetectionResult r = service.detect("demo/jobpilot",
+            List.of("package.json", "server.js"),
+            Map.of("package.json", EXPRESS_PACKAGE_JSON, "server.js", server),
+            List.of(), List.of());
+        Detection health = find(r, "HEALTH_ENDPOINT", "/api/health");
+        assertNotNull(health, "should detect /api/health");
+    }
+
+    @Test
+    void detectsMountedExpressHealthRoute() {
+        // router.get("/health") mounted at app.use("/api", router) -> /api/health
+        String server = "const router = express.Router();\n"
+            + "router.get('/health', (req, res) => res.send('ok'));\n"
+            + "app.use('/api', router);\n";
+        StackDetectionResult r = service.detect("demo/jobpilot",
+            List.of("package.json", "server.js"),
+            Map.of("package.json", EXPRESS_PACKAGE_JSON, "server.js", server),
+            List.of(), List.of());
+        Detection health = find(r, "HEALTH_ENDPOINT", "/api/health");
+        assertNotNull(health, "mounted router path should resolve to /api/health");
+    }
+
+    @Test
+    void noHealthRouteMeansNoHealthDetection() {
+        StackDetectionResult r = service.detect("demo/app",
+            List.of("package.json", "server.js"),
+            Map.of("package.json", EXPRESS_PACKAGE_JSON,
+                "server.js", "app.get('/', (req,res)=>res.send('hi'));"),
+            List.of(), List.of());
+        assertTrue(r.getDetections().stream().noneMatch(d -> d.getCategory().equals("HEALTH_ENDPOINT")));
+    }
 }

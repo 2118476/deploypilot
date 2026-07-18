@@ -29,7 +29,20 @@ public class StackDetectionService {
     private static final Pattern SECRET_NAME = Pattern.compile(
         "(?i)(secret|token|key|password|passwd|private|credential|auth|dsn|salt)|(?i)^database_url$|(?i)connection_string");
     private static final Pattern PUBLIC_PREFIX = Pattern.compile("^(VITE_|NEXT_PUBLIC_|REACT_APP_|PUBLIC_|EXPO_PUBLIC_)");
+    // Credentials that are intentionally public and required by browser clients
+    // (Supabase anon key, publishable keys). These are NOT secrets and must not
+    // be flagged as an exposed-secret blocker. Deliberately excludes anything
+    // like SERVICE_ROLE, which stays a backend-only secret.
+    private static final Pattern PUBLISHABLE_CREDENTIAL = Pattern.compile(
+        "(?i)(anon_key|anon_public_key|publishable_key|publishable_default_key)$");
     private static final Pattern JAVA_VERSION = Pattern.compile("<java\\.version>\\s*(\\d+)\\s*</java\\.version>");
+
+    // Express-style health route: app.get("/api/health", …) / router.get('/health', …)
+    private static final Pattern EXPRESS_HEALTH_ROUTE = Pattern.compile(
+        "(?i)\\b(?:app|router|[a-z_$][\\w$]*)\\.get\\(\\s*[\"'](/[^\"']*health[^\"']*)[\"']");
+    // Mounted router prefix: app.use("/api", …)
+    private static final Pattern EXPRESS_MOUNT_PREFIX = Pattern.compile(
+        "(?i)\\b(?:app|[a-z_$][\\w$]*)\\.use\\(\\s*[\"'](/[A-Za-z0-9_\\-/]+)[\"']\\s*,");
 
     /**
      * @param repository   owner/name, used only for labelling the result
@@ -104,12 +117,87 @@ public class StackDetectionService {
             }
         }
 
+        detectExpressHealthRoute(filesByPath, result);
+
         result.setStructure(decideStructure(appRoots));
         if (result.getDetections().isEmpty()) {
             result.getWarnings().add("No recognizable technology evidence found. "
                 + "The repository may use a stack DeployPilot does not detect yet.");
         }
         return result;
+    }
+
+    /**
+     * Scans downloaded Node source files for an Express health route and records
+     * the resolved path (including a mounted router prefix such as /api) as a
+     * HEALTH_ENDPOINT detection, so the blueprint can recommend the exact health
+     * check path.
+     */
+    private void detectExpressHealthRoute(Map<String, String> filesByPath, StackDetectionResult result) {
+        String bestPath = null;
+        String evidenceFile = null;
+        String bestDir = "";
+        for (Map.Entry<String, String> entry : new TreeMap<>(filesByPath).entrySet()) {
+            String path = entry.getKey();
+            if (!isNodeSource(path)) continue;
+            String content = entry.getValue();
+
+            List<String> mountPrefixes = new ArrayList<>();
+            Matcher mount = EXPRESS_MOUNT_PREFIX.matcher(content);
+            while (mount.find()) {
+                String p = stripTrailingSlash(mount.group(1));
+                if (!p.equals("/") && !mountPrefixes.contains(p)) mountPrefixes.add(p);
+            }
+
+            Matcher route = EXPRESS_HEALTH_ROUTE.matcher(content);
+            while (route.find()) {
+                String routePath = route.group(1);
+                String resolved = resolveHealthPath(routePath, mountPrefixes);
+                if (isBetterHealthPath(resolved, bestPath)) {
+                    bestPath = resolved;
+                    evidenceFile = path;
+                    bestDir = dirOf(path);
+                }
+            }
+        }
+        if (bestPath != null) {
+            add(result, "HEALTH_ENDPOINT", bestPath, bestDir, "HIGH",
+                "Express health route detected in " + evidenceFile);
+        }
+    }
+
+    private boolean isNodeSource(String path) {
+        String lower = path.toLowerCase();
+        return lower.endsWith(".js") || lower.endsWith(".ts")
+            || lower.endsWith(".mjs") || lower.endsWith(".cjs");
+    }
+
+    /**
+     * If the route is a bare "/health" mounted under a prefix (e.g. app.use("/api", router)),
+     * prepend the prefix to produce the externally reachable path "/api/health".
+     */
+    private String resolveHealthPath(String routePath, List<String> mountPrefixes) {
+        String normalized = stripTrailingSlash(routePath);
+        for (String prefix : mountPrefixes) {
+            // only combine when the route isn't already prefixed
+            if (!normalized.startsWith(prefix + "/") && !normalized.equals(prefix)) {
+                return prefix + normalized;
+            }
+        }
+        return normalized;
+    }
+
+    /** Prefer the most specific (deepest) path, breaking ties toward one under /api. */
+    private boolean isBetterHealthPath(String candidate, String current) {
+        if (current == null) return true;
+        int candSegs = candidate.split("/").length;
+        int curSegs = current.split("/").length;
+        if (candSegs != curSegs) return candSegs > curSegs;
+        return candidate.startsWith("/api") && !current.startsWith("/api");
+    }
+
+    private String stripTrailingSlash(String p) {
+        return p.length() > 1 && p.endsWith("/") ? p.substring(0, p.length() - 1) : p;
     }
 
     // ---------- individual analyzers ----------
@@ -252,7 +340,11 @@ public class StackDetectionService {
             .anyMatch(v -> v.getName().equals(name) && v.getSource().equals(source));
         if (exists) return;
         String classification;
-        if (SECRET_NAME.matcher(name).find()) {
+        // Publishable/anon credentials are checked first: they contain "key" but
+        // are intentionally public, so they must not be treated as secrets.
+        if (PUBLISHABLE_CREDENTIAL.matcher(name).find()) {
+            classification = "PUBLIC_PUBLISHABLE_CREDENTIAL";
+        } else if (SECRET_NAME.matcher(name).find()) {
             classification = "SECRET_OR_SENSITIVE";
         } else if (PUBLIC_PREFIX.matcher(name).find()) {
             classification = "PUBLIC_CONFIGURATION";

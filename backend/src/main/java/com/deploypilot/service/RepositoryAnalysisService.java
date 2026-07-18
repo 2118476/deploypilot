@@ -55,7 +55,10 @@ public class RepositoryAnalysisService {
         "dockerfile", "docker-compose.yml", "docker-compose.yaml",
         "netlify.toml", "vercel.json", "render.yaml", "procfile",
         "firebase.json", "angular.json",
-        ".env.example", ".env.sample", ".env.template", "env.example");
+        ".env.example", ".env.sample", ".env.template", "env.example",
+        // Common Node entry points, scanned for Express health routes
+        "server.js", "server.ts", "app.js", "app.ts", "index.js", "index.ts",
+        "main.js", "main.ts");
 
     private static final Set<String> INTERESTING_PREFIXES = Set.of("vite.config.", "next.config.");
 
