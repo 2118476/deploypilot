@@ -574,7 +574,7 @@ function failureGuidance(run: AutomationRun, steps: ExecutionStep[]): {
   if (/host key verification|could not read from remote repository|failed to prepare repo|unable to access repository/.test(evidence)) {
     return {
       title: 'Netlify could not clone the GitHub repository',
-      detail: 'Retry so DeployPilot can replace a stale SSH/deploy-key link with the public GitHub HTTPS repository. If Netlify still refuses access, relink the repository through Netlify’s GitHub connection, then retry this same step.',
+      detail: 'Relink this site to the repository through Netlify’s GitHub connection, then retry this same step. DeployPilot will preserve that authorized connection and will not unlink it automatically.',
       connections: true,
     };
   }
