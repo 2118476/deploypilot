@@ -27,6 +27,7 @@ class RepositoryAnalysisServiceLimitsTest {
         assertTrue(service.isInteresting("vite.config.ts"));
         assertTrue(service.isInteresting("Dockerfile"));
         assertTrue(service.isInteresting("render.yaml"));
+        assertTrue(service.isInteresting(".gitignore"));
     }
 
     @Test

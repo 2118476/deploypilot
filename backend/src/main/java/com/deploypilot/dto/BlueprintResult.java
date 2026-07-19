@@ -100,7 +100,7 @@ public class BlueprintResult {
         private String classification;      // SECRET_OR_SENSITIVE | PUBLIC_CONFIGURATION | CONFIGURATION
         private Boolean required;           // null = unknown
         private String valueSource;         // human description of where the value comes from
-        private String expectedFormat;      // e.g. "${BACKEND_PUBLIC_URL}/api"
+        private String expectedFormat;      // e.g. "${BACKEND_PUBLIC_URL}"
         private boolean generatable;        // true only for app-owned secrets DeployPilot may generate client-side
         private String dependsOnOutput;     // e.g. "BACKEND_PUBLIC_URL", null if independent
         private String sourceEvidence;      // file the name was found in

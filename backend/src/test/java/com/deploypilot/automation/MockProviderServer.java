@@ -43,6 +43,7 @@ public class MockProviderServer implements AutoCloseable {
     private volatile boolean gitHubRepoInaccessible = false;   // token cannot see the repo at all
     private volatile boolean gitHubMetadataFailure = false;    // repo metadata 500s; default branch is master
     private volatile int netlifyEnvFailuresRemaining = 0;
+    private volatile int netlifyEnvForbiddenRemaining = 0;
     // Keys that already exist on the account but are NOT returned by the env listing
     // (e.g. created earlier or under the legacy site-level system). Creating them 400s
     // "already exists"; updating them succeeds and moves them into the visible env.
@@ -104,6 +105,7 @@ public class MockProviderServer implements AutoCloseable {
     public void setGitHubRepoInaccessible(boolean v) { this.gitHubRepoInaccessible = v; }
     public void setGitHubMetadataFailure(boolean v) { this.gitHubMetadataFailure = v; }
     public void setNetlifyEnvFailures(int calls) { this.netlifyEnvFailuresRemaining = calls; }
+    public void setNetlifyEnvForbidden(int calls) { this.netlifyEnvForbiddenRemaining = calls; }
     /** Body returned by the next simulated env failure (to exercise error sanitisation). */
     public void setNetlifyEnvErrorBody(String body) { this.netlifyEnvErrorBody = body; }
     /** Mark a variable as already existing on the account but hidden from the env listing. */
@@ -113,6 +115,15 @@ public class MockProviderServer implements AutoCloseable {
         if (site != null) {
             site.put("public_repo", false);
             site.put("deploy_key_id", "nf-stale-deploy-key");
+        }
+    }
+    /** Simulate the broken SSH repository URL shown by a Netlify host-key failure. */
+    public void markNetlifyRepoUsingSsh(String siteId) {
+        Map<String, Object> site = netlifySites.get(siteId);
+        if (site != null) {
+            site.put("repo_url", "git@github.com:" + site.get("repo_path") + ".git");
+            site.remove("deploy_key_id");
+            site.remove("public_repo");
         }
     }
     /**
@@ -144,6 +155,7 @@ public class MockProviderServer implements AutoCloseable {
         gitHubRepoInaccessible = false;
         gitHubMetadataFailure = false;
         netlifyEnvFailuresRemaining = 0;
+        netlifyEnvForbiddenRemaining = 0;
         netlifyHiddenEnvKeys.clear();
         netlifyEnvErrorBody = null;
         netlifyNextPatchOmitsRepoPath = false;
@@ -242,6 +254,8 @@ public class MockProviderServer implements AutoCloseable {
             site.put("ssl_url", liveFrontendUrl());
             site.put("repo_path", repoPath);
             site.put("repo_branch", extractOr(body, "\"repo_branch\"\\s*:\\s*\"([^\"]+)\"", "main"));
+            site.put("repo_url", extractOr(body, "\"repo_url\"\\s*:\\s*\"([^\"]+)\"",
+                "https://github.com/" + repoPath + ".git"));
             site.put("public_repo", body.contains("\"public_repo\":true"));
             site.put("deploy_key_id", "");
             site.put("env", new LinkedHashMap<String, Object>());
@@ -259,6 +273,7 @@ public class MockProviderServer implements AutoCloseable {
             }
             site.put("repo_path", extract(body, "\"repo_path\"\\s*:\\s*\"([^\"]+)\""));
             site.put("repo_branch", extractOr(body, "\"repo_branch\"\\s*:\\s*\"([^\"]+)\"", str(site.get("repo_branch"))));
+            site.put("repo_url", extractOr(body, "\"repo_url\"\\s*:\\s*\"([^\"]+)\"", str(site.get("repo_url"))));
             site.put("public_repo", body.contains("\"public_repo\":true"));
             if (Boolean.TRUE.equals(site.get("public_repo"))) site.put("deploy_key_id", "");
             // Simulate an eventually-consistent PATCH: state is updated, but the
@@ -275,6 +290,7 @@ public class MockProviderServer implements AutoCloseable {
             Map<String, Object> site = netlifySites.get(id);
             if (site == null) { json(ex, 404, "{}"); return; }
             site.put("repo_path", "");
+            site.put("repo_url", "");
             site.put("public_repo", false);
             site.put("deploy_key_id", "");
             json(ex, 200, netlifySiteJson(site));
@@ -296,8 +312,17 @@ public class MockProviderServer implements AutoCloseable {
             }
             json(ex, 200, out.append(']').toString());
         } else if (p.equals("/accounts/nf-acct-1/env") && method.equals("POST")) {
+            if (body.contains("\"scopes\"")) {
+                json(ex, 403, "{\"message\":\"Granular scopes require a Pro plan\"}");
+                return;
+            }
             if (!validNetlifyEnvPayload(body)) {
-                json(ex, 400, "{\"message\":\"environment variable scopes are required\"}");
+                json(ex, 400, "{\"message\":\"invalid environment variable payload\"}");
+                return;
+            }
+            if (netlifyEnvForbiddenRemaining > 0) {
+                netlifyEnvForbiddenRemaining--;
+                json(ex, 403, "{\"message\":\"This operation is not available on the current plan\"}");
                 return;
             }
             if (netlifyEnvFailuresRemaining > 0) {
@@ -322,8 +347,17 @@ public class MockProviderServer implements AutoCloseable {
             for (String k : bodyKeys) env.put(k, true);
             json(ex, 201, body);
         } else if (p.matches("/accounts/nf-acct-1/env/[^/]+") && method.equals("PUT")) {
+            if (body.contains("\"scopes\"")) {
+                json(ex, 403, "{\"message\":\"Granular scopes require a Pro plan\"}");
+                return;
+            }
             if (!validNetlifyEnvPayload(body)) {
-                json(ex, 400, "{\"message\":\"environment variable scopes are required\"}");
+                json(ex, 400, "{\"message\":\"invalid environment variable payload\"}");
+                return;
+            }
+            if (netlifyEnvForbiddenRemaining > 0) {
+                netlifyEnvForbiddenRemaining--;
+                json(ex, 403, "{\"message\":\"This operation is not available on the current plan\"}");
                 return;
             }
             if (netlifyEnvFailuresRemaining > 0) {
@@ -375,6 +409,9 @@ public class MockProviderServer implements AutoCloseable {
         if (s.containsKey("deploy_key_id")) {
             bs.append(",\"deploy_key_id\":\"").append(str(s.get("deploy_key_id"))).append("\"");
         }
+        if (s.containsKey("repo_url")) {
+            bs.append(",\"repo_url\":\"").append(str(s.get("repo_url"))).append("\"");
+        }
         bs.append("}");
         return "{\"id\":\"" + s.get("id") + "\",\"name\":\"" + s.get("name") + "\",\"ssl_url\":\"" + s.get("ssl_url")
             + "\",\"account_id\":\"" + s.get("account_id") + "\",\"build_settings\":" + bs + "}";
@@ -390,11 +427,9 @@ public class MockProviderServer implements AutoCloseable {
 
     private boolean validNetlifyEnvPayload(String body) {
         long keys = java.util.regex.Pattern.compile("\"key\"\\s*:").matcher(body).results().count();
-        long freePlanScopes = java.util.regex.Pattern.compile(
-            "\"scopes\"\\s*:\\s*\\[\\s*\"builds\"\\s*,\\s*\"functions\"\\s*,\\s*"
-                + "\"runtime\"\\s*,\\s*\"post-processing\"\\s*\\]")
-            .matcher(body).results().count();
-        return keys > 0 && keys == freePlanScopes;
+        long values = java.util.regex.Pattern.compile("\"values\"\\s*:").matcher(body).results().count();
+        long contexts = java.util.regex.Pattern.compile("\"context\"\\s*:\\s*\"all\"").matcher(body).results().count();
+        return keys > 0 && keys == values && keys == contexts && !body.contains("\"scopes\"");
     }
 
     private String envFailureBody() {

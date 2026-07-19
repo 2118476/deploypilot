@@ -499,6 +499,9 @@ function RunView({ run, projectId, onRetried, planInputs, planHash }: {
 
   const steps = run.steps ?? [];
   const running = run.status === 'RUNNING' || run.status === 'PENDING';
+  const guidance = run.status === 'FAILED' || run.status === 'PAUSED'
+    ? failureGuidance(run, steps)
+    : null;
 
   return (
     <section className="space-y-4 mt-6">
@@ -520,6 +523,22 @@ function RunView({ run, projectId, onRetried, planInputs, planHash }: {
         {run.outputs?.pullRequestUrl && (
           <p className="text-sm text-slate-600 dark:text-slate-300">Pull request: <a className="text-primary-600" href={run.outputs.pullRequestUrl} target="_blank" rel="noreferrer">{run.outputs.pullRequestUrl}</a></p>
         )}
+        {guidance && (
+          <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50/70 p-3 dark:border-amber-900 dark:bg-amber-900/10">
+            <p className="text-sm font-semibold text-amber-800 dark:text-amber-300 flex items-center gap-2">
+              <ShieldAlert className="w-4 h-4" /> {guidance.title}
+            </p>
+            <p className="text-xs text-amber-700 dark:text-amber-200 mt-1">{guidance.detail}</p>
+            {guidance.connections && (
+              <Link to="/connections" className="inline-flex text-xs font-medium text-primary-600 hover:underline mt-2">
+                Open provider connections
+              </Link>
+            )}
+            <p className="text-xs text-slate-500 mt-2">
+              Retrying resumes here. Completed steps stay completed and existing services are reused.
+            </p>
+          </div>
+        )}
         {(run.status === 'FAILED' || run.status === 'PAUSED') && planHash && (
           <button className="btn-primary mt-3" onClick={() => retryMut.mutate()} disabled={retryMut.isPending}>
             {retryMut.isPending ? <span className="inline-flex items-center gap-2"><Loader2 className="w-4 h-4 animate-spin" /> Retrying…</span>
@@ -536,6 +555,40 @@ function RunView({ run, projectId, onRetried, planInputs, planHash }: {
       </div>
     </section>
   );
+}
+
+function failureGuidance(run: AutomationRun, steps: ExecutionStep[]): {
+  title: string; detail: string; connections?: boolean;
+} {
+  const failed = steps.filter((s) => s.status === 'FAILED');
+  const evidence = [run.failureReason, ...failed.flatMap((s) => [s.title, s.detail, s.sanitizedLog])]
+    .filter(Boolean).join(' ').toLowerCase();
+
+  if (evidence.includes('netlify') && /(status 401|authentication failed|rejected the token)/.test(evidence)) {
+    return {
+      title: 'Retry once before replacing the Netlify token',
+      detail: 'Older DeployPilot builds grouped free-plan and permission responses under “token rejected.” The retry now uses a free-plan-compatible request. Reconnect Netlify only if it explicitly reports authentication failed (401).',
+      connections: true,
+    };
+  }
+  if (/host key verification|could not read from remote repository|failed to prepare repo|unable to access repository/.test(evidence)) {
+    return {
+      title: 'Netlify could not clone the GitHub repository',
+      detail: 'Retry so DeployPilot can replace a stale SSH/deploy-key link with the public GitHub HTTPS repository. If Netlify still refuses access, relink the repository through Netlify’s GitHub connection, then retry this same step.',
+      connections: true,
+    };
+  }
+  if (evidence.includes('netlify') && /(status 403|scope|plan)/.test(evidence)) {
+    return {
+      title: 'Netlify refused this operation',
+      detail: 'The token connected successfully, but Netlify blocked this specific operation. Review the provider response shown on the failed step; DeployPilot will not hide a plan or permission error as a bad token.',
+      connections: true,
+    };
+  }
+  return {
+    title: 'Fix the failed step, then resume',
+    detail: 'Review the failed step and its provider log below. Retry continues from that point without recreating resources or repeating completed work.',
+  };
 }
 
 function StepRow({ step }: { step: ExecutionStep }) {

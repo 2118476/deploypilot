@@ -54,6 +54,7 @@ public class RepositoryAnalysisService {
         "application.properties", "application.yml", "application.yaml",
         "dockerfile", "docker-compose.yml", "docker-compose.yaml",
         "netlify.toml", "vercel.json", "render.yaml", "procfile",
+        ".gitignore",
         "firebase.json", "angular.json",
         ".env.example", ".env.sample", ".env.template", "env.example",
         // Common Node entry points, scanned for Express health routes

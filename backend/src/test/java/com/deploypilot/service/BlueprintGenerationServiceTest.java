@@ -154,7 +154,7 @@ class BlueprintGenerationServiceTest {
     @Test
     void dependentValuesUsePlaceholdersNotInventedUrls() {
         BlueprintResult bp = generate();
-        assertTrue(envVar(bp, "VITE_API_BASE_URL").getExpectedFormat().contains("${BACKEND_PUBLIC_URL}"));
+        assertEquals("${BACKEND_PUBLIC_URL}", envVar(bp, "VITE_API_BASE_URL").getExpectedFormat());
         assertTrue(envVar(bp, "FRONTEND_URL").getExpectedFormat().contains("${FRONTEND_PUBLIC_URL}"));
         for (EnvVarMapping v : bp.getEnvironmentVariables()) {
             if (v.getExpectedFormat() != null) {
@@ -284,6 +284,19 @@ class BlueprintGenerationServiceTest {
         assertTrue(diff.contains("- b"));
         assertTrue(diff.contains("+ X"));
         assertEquals("(no changes needed)", service.simpleDiff("same\n", "same\n"));
+    }
+
+    @Test
+    void existingGitignoreIsPreservedInsteadOfReplacedByTemplate() {
+        StackDetectionResult a = monorepoAnalysis();
+        a.getAnalyzedFiles().add(".gitignore");
+        String current = "node_modules\n.env*\nserver/.env\nserver/data/\n";
+        BlueprintResult bp = service.generate(a, Map.of(), Map.of(".gitignore", current));
+        BlueprintResult.FilePreview preview = bp.getFilePreviews().stream()
+            .filter(p -> p.getPath().equals(".gitignore")).findFirst().orElseThrow();
+        assertEquals(Boolean.TRUE, preview.getExists());
+        assertEquals(current, preview.getSuggestedContent());
+        assertEquals("(no changes needed)", preview.getDiff());
     }
 
     // ==================== Supabase accuracy regressions ====================

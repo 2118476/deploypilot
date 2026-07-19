@@ -160,9 +160,8 @@ class ProviderAdapterTest {
             "existing environment variables are updated idempotently");
         assertTrue(mock.to("/nf/accounts/nf-acct-1/env").stream()
             .filter(r -> r.method().equals("POST") || r.method().equals("PUT"))
-            .allMatch(r -> r.body().contains(
-                "\"scopes\":[\"builds\",\"functions\",\"runtime\",\"post-processing\"]")),
-            "free-plan environment variables must include every Netlify scope");
+            .noneMatch(r -> r.body().contains("\"scopes\"")),
+            "free-plan environment variables must omit paid granular scopes");
         assertEquals(1, mock.countExact("PUT", "/nf/sites/" + site.id() + "/unlink_repo"),
             "a stale deploy key is cleared before relinking the same public site");
         assertTrue(mock.requests().stream()
@@ -194,9 +193,8 @@ class ProviderAdapterTest {
         assertTrue(b.contains("\"key\":\"VITE_SUPABASE_ANON_KEY\""));
         assertTrue(b.contains("\"context\":\"all\""), "each value applies to all deploy contexts");
         assertTrue(b.contains("\"is_secret\":false"), "public frontend variables are not secret");
-        // Every supported scope is sent so free sites (which cannot select granular scopes) keep working.
-        assertTrue(b.contains("\"scopes\":[\"builds\",\"functions\",\"runtime\",\"post-processing\"]"),
-            "free-plan variables include every Netlify scope");
+        assertFalse(b.contains("\"scopes\""),
+            "free-plan variables omit Netlify's paid granular-scope field");
     }
 
     @Test
@@ -265,6 +263,20 @@ class ProviderAdapterTest {
         assertFalse(ex.getMessage().contains("nfp_abcdefghij1234567890zzzz"), "provider tokens must be redacted");
     }
 
+    @Test
+    void netlifyForbiddenEnvOperationIsNotMisreportedAsBadToken() {
+        HostingSite site = createFrontend();
+        mock.setNetlifyEnvForbidden(1);
+        mock.clearRequests();
+
+        Exception ex = assertThrows(RuntimeException.class, () -> netlify.setEnvVars(nf, site.id(),
+            List.of(new EnvVarInput("VITE_API_URL", "https://api.example", false))));
+
+        assertTrue(ex.getMessage().contains("status 403"));
+        assertTrue(ex.getMessage().contains("current plan"));
+        assertFalse(ex.getMessage().toLowerCase().contains("rejected the token"));
+    }
+
     // ---------- repository-binding detection (field-presence aware) ----------
 
     @Test
@@ -297,6 +309,22 @@ class ProviderAdapterTest {
 
         assertDoesNotThrow(() -> netlify.configureSite(nf, site.id(), publicRequest("demo/sample-monorepo", "main")));
         assertEquals(1, unlinkCount(site.id()), "a genuinely stale binding is still repaired");
+    }
+
+    @Test
+    void netlifyRepairsSshUrlThatCausesHostKeyFailure() {
+        HostingSite site = createFrontend();
+        mock.markNetlifyRepoUsingSsh(site.id());
+        mock.clearRequests();
+
+        assertDoesNotThrow(() -> netlify.configureSite(nf, site.id(),
+            publicRequest("demo/sample-monorepo", "main")));
+        assertEquals(1, unlinkCount(site.id()), "a public SSH repository URL must be cleared");
+        assertTrue(mock.to("/nf/sites/" + site.id()).stream()
+            .filter(r -> r.method().equals("PATCH"))
+            .anyMatch(r -> r.body().contains(
+                "\"repo_url\":\"https://github.com/demo/sample-monorepo.git\"")),
+            "the repaired public repository must use HTTPS");
     }
 
     @Test

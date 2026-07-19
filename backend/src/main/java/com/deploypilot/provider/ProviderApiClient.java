@@ -58,6 +58,8 @@ public class ProviderApiClient {
 
     public record ApiResult(int status, JsonNode body, String rawBody) {
         public boolean isSuccess() { return status >= 200 && status < 300; }
+        public boolean isUnauthenticated() { return status == 401; }
+        public boolean isForbidden() { return status == 403; }
         public boolean isUnauthorized() { return status == 401 || status == 403; }
         public boolean isNotFound() { return status == 404; }
     }

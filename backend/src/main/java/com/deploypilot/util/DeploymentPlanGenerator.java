@@ -220,9 +220,9 @@ public class DeploymentPlanGenerator {
                     "frontend", "Add VITE_API_BASE_URL pointing to your Render backend URL",
                     "The frontend needs to know the backend API address",
                     "Netlify Dashboard > Site Settings > Environment Variables",
-                "VITE_API_BASE_URL=https://your-backend.onrender.com/api", "Sets the API endpoint for all frontend requests",
+                "VITE_API_BASE_URL=https://your-backend.onrender.com", "Sets the backend origin for frontend requests",
                     "Frontend loads data from the backend; no localhost references",
-                    List.of("API calls fail: check the URL has /api at the end",
+                    List.of("API calls fail: match the URL to the frontend client's base-URL contract",
                             "Mixed content error: ensure HTTPS is used for both frontend and backend"),
                 "Never put API keys or secrets in frontend env vars"));
 

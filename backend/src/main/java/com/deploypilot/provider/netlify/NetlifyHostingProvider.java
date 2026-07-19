@@ -31,14 +31,6 @@ import java.util.Set;
 public class NetlifyHostingProvider implements HostingProvider {
 
     private static final int MAX_SITES = 100;
-    /**
-     * Netlify free accounts cannot select a granular environment-variable scope.
-     * Sending every supported scope preserves the free-plan behaviour while also
-     * satisfying the current account environment API schema.
-     */
-    private static final List<String> FREE_PLAN_ENV_SCOPES =
-        List.of("builds", "functions", "runtime", "post-processing");
-
     // Bounded re-read to absorb Netlify's eventual consistency after a repo PATCH.
     // Small and finite: no long sleeps, no unbounded polling.
     private static final int BINDING_VERIFY_MAX_RETRIES = 3;
@@ -125,7 +117,11 @@ public class NetlifyHostingProvider implements HostingProvider {
         boolean explicitlyStalePublicBinding = request.publicRepository()
             && isExplicitlyFalse(buildSettings, "public_repo");
         boolean lingeringDeployKey = hasText(buildSettings, "deploy_key_id");
-        boolean needsRepair = wrongRepository || explicitlyStalePublicBinding || lingeringDeployKey;
+        boolean wrongPublicRepoUrl = request.publicRepository()
+            && hasText(buildSettings, "repo_url")
+            && !publicRepoUrlMatches(buildSettings, request);
+        boolean needsRepair = wrongRepository || explicitlyStalePublicBinding
+            || lingeringDeployKey || wrongPublicRepoUrl;
 
         if (needsRepair) {
             ApiResult unlinked = http.put(baseUrl + "/sites/" + enc(siteId) + "/unlink_repo", credential);
@@ -201,7 +197,7 @@ public class NetlifyHostingProvider implements HostingProvider {
         }
 
         ApiResult site = http.get(baseUrl + "/sites/" + enc(siteId), credential);
-        if (site.isUnauthorized()) throw new ProviderException.BadCredentials("Netlify rejected the token.");
+        requireEnvironmentAccess(site, "read the site before setting environment variables", vars);
         if (site.isNotFound()) throw new ProviderException.NotFound("Netlify site not found: " + siteId);
         if (!site.isSuccess()) {
             throw new ProviderException.UnexpectedResult(
@@ -230,7 +226,7 @@ public class NetlifyHostingProvider implements HostingProvider {
     private Set<String> existingEnvKeys(ProviderCredential credential, String accountId, String siteId,
                                         List<EnvVarInput> vars) {
         ApiResult current = http.get(envUrl(accountId, siteId), credential);
-        if (current.isUnauthorized()) throw new ProviderException.BadCredentials("Netlify rejected the token.");
+        requireEnvironmentAccess(current, "read environment variables", vars);
         if (!current.isSuccess() || !current.body().isArray()) {
             throw new ProviderException.UnexpectedResult(
                 "Could not read Netlify environment variables (status " + current.status() + ")."
@@ -248,7 +244,7 @@ public class NetlifyHostingProvider implements HostingProvider {
                                List<Map<String, Object>> toCreate, List<EnvVarInput> all) {
         ApiResult created = http.post(envUrl(accountId, siteId), toCreate, credential);
         if (created.isSuccess()) return;
-        if (created.isUnauthorized()) throw new ProviderException.BadCredentials("Netlify rejected the token.");
+        requireEnvironmentAccess(created, "create environment variables", all);
         // On a reused site, variables can already exist without appearing in the
         // account listing (e.g. created earlier or under the legacy site-level env
         // system). Netlify then answers the create with a 400/409 "already exists".
@@ -268,12 +264,12 @@ public class NetlifyHostingProvider implements HostingProvider {
         List<EnvVarInput> one = List.of(v);
         ApiResult updated = http.put(envUrl(accountId, siteId, v.key()), envVar(v), credential);
         if (updated.isSuccess()) return;
-        if (updated.isUnauthorized()) throw new ProviderException.BadCredentials("Netlify rejected the token.");
+        requireEnvironmentAccess(updated, "update environment variable " + v.key(), one);
         // The variable was listed but is gone now (or never really existed): create it.
         if (updated.isNotFound()) {
             ApiResult created = http.post(envUrl(accountId, siteId), List.of(envVar(v)), credential);
             if (created.isSuccess()) return;
-            if (created.isUnauthorized()) throw new ProviderException.BadCredentials("Netlify rejected the token.");
+            requireEnvironmentAccess(created, "create environment variable " + v.key(), one);
             throw new ProviderException.UnexpectedResult(
                 "Could not create Netlify environment variable " + v.key()
                     + " (status " + created.status() + ")." + responseDetail(created, one));
@@ -350,9 +346,9 @@ public class NetlifyHostingProvider implements HostingProvider {
     private Map<String, Object> envVar(EnvVarInput v) {
         Map<String, Object> env = new LinkedHashMap<>();
         env.put("key", v.key());
-        // Send every supported scope: this keeps free sites (which cannot select a
-        // granular scope) working while satisfying the account env API schema.
-        env.put("scopes", FREE_PLAN_ENV_SCOPES);
+        // Do not send `scopes`: Netlify documents granular scopes as a Pro-plan
+        // feature. Omitting the field applies the variable to the free site's
+        // default scopes; sending it makes a valid free-plan token receive 403.
         // One contextual value applied to every deploy context ("all").
         env.put("values", List.of(Map.of("value", v.value(), "context", "all")));
         env.put("is_secret", v.secret());
@@ -408,6 +404,24 @@ public class NetlifyHostingProvider implements HostingProvider {
         return out;
     }
 
+    /**
+     * A 401 means the credential itself is invalid. A 403 is deliberately kept
+     * separate: Netlify also uses it for plan/operation restrictions (including
+     * paid-only environment scopes), so calling every 403 a rejected token sends
+     * users to rotate a perfectly valid credential and hides the real response.
+     */
+    private void requireEnvironmentAccess(ApiResult r, String operation, List<EnvVarInput> vars) {
+        if (r.isUnauthenticated()) {
+            throw new ProviderException.BadCredentials(
+                "Netlify authentication failed (status 401). Reconnect Netlify with a current personal access token.");
+        }
+        if (r.isForbidden()) {
+            throw new ProviderException.UnexpectedResult(
+                "Netlify refused to " + operation + " (status 403)."
+                    + responseDetail(r, vars));
+        }
+    }
+
     private void requireSiteSuccess(ApiResult r, String siteId, String operation) {
         if (r.isUnauthorized()) throw new ProviderException.BadCredentials("Netlify rejected the token.");
         if (r.isNotFound()) throw new ProviderException.NotFound("Netlify site not found: " + siteId);
@@ -428,6 +442,15 @@ public class NetlifyHostingProvider implements HostingProvider {
     private static boolean repoPathMatches(JsonNode buildSettings, CreateSiteRequest request) {
         String linked = text(buildSettings, "repo_path");
         return linked != null && linked.equalsIgnoreCase(request.repoFullName());
+    }
+
+    /** Public GitHub repositories must use HTTPS, never a stale SSH/deploy-key URL. */
+    private static boolean publicRepoUrlMatches(JsonNode buildSettings, CreateSiteRequest request) {
+        String linked = text(buildSettings, "repo_url");
+        if (linked == null) return true; // optional field absent: no evidence of a broken link
+        String normalized = linked.trim().replaceAll("/+$", "").toLowerCase(Locale.ROOT);
+        String expected = ("https://github.com/" + request.repoFullName()).toLowerCase(Locale.ROOT);
+        return normalized.equals(expected) || normalized.equals(expected + ".git");
     }
 
     /** A configured branch is compatible when it matches, or when either side is unspecified. */
