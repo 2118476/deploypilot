@@ -265,6 +265,93 @@ class ProviderAdapterTest {
         assertFalse(ex.getMessage().contains("nfp_abcdefghij1234567890zzzz"), "provider tokens must be redacted");
     }
 
+    // ---------- repository-binding detection (field-presence aware) ----------
+
+    @Test
+    void netlifyAcceptsExistingPublicBindingWithoutRepair() {
+        HostingSite site = createFrontend(); // build_settings has public_repo=true, deploy_key_id=""
+        mock.clearRequests();
+        assertDoesNotThrow(() -> netlify.configureSite(nf, site.id(), publicRequest("demo/sample-monorepo", "main")));
+        assertEquals(0, unlinkCount(site.id()), "a valid public binding must not be unlinked");
+    }
+
+    @Test
+    void netlifyAcceptsManualGithubAppLinkWhenOptionalFieldsAbsent() {
+        HostingSite site = createFrontend();
+        // Simulate the manual relink: repo linked and buildable, but Netlify omits the
+        // optional public_repo and deploy_key_id fields (GitHub App connection).
+        mock.markNetlifyRepoLinkedViaGithubApp(site.id());
+        mock.clearRequests();
+
+        assertDoesNotThrow(() -> netlify.configureSite(nf, site.id(), publicRequest("demo/sample-monorepo", "main")),
+            "an absent public_repo/deploy_key_id must not be treated as a broken binding");
+        assertEquals(0, unlinkCount(site.id()),
+            "a valid manually-linked GitHub App connection must never be unlinked");
+    }
+
+    @Test
+    void netlifyRepairsExplicitlyStalePublicBinding() {
+        HostingSite site = createFrontend();
+        mock.markNetlifyRepoBindingStale(site.id()); // public_repo=false + lingering deploy_key_id
+        mock.clearRequests();
+
+        assertDoesNotThrow(() -> netlify.configureSite(nf, site.id(), publicRequest("demo/sample-monorepo", "main")));
+        assertEquals(1, unlinkCount(site.id()), "a genuinely stale binding is still repaired");
+    }
+
+    @Test
+    void netlifyPreservesPrivateRepositoryBinding() {
+        HostingSite site = netlify.createSite(nf, new CreateSiteRequest("priv-frontend", "acme/private-app", "main",
+            "frontend", "npm run build", "dist", null, null, null, false)); // private
+        mock.markNetlifyRepoLinkedViaGithubApp(site.id());
+        mock.clearRequests();
+
+        assertDoesNotThrow(() -> netlify.configureSite(nf, site.id(),
+            new CreateSiteRequest(null, "acme/private-app", "main", "frontend",
+                "npm run build", "dist", null, null, null, false)));
+        assertEquals(0, unlinkCount(site.id()), "a private GitHub App connection must be preserved, not unlinked");
+        // The repository payload must never force a private repo through public_repo.
+        assertTrue(mock.to("/nf/sites/" + site.id()).stream()
+            .filter(r -> r.method().equals("PATCH"))
+            .allMatch(r -> !r.body().contains("\"public_repo\"")),
+            "private repositories must not be reconfigured as public");
+    }
+
+    @Test
+    void netlifyAcceptsPartialPatchAfterAVerifyingReRead() {
+        HostingSite site = createFrontend();
+        mock.markNetlifyRepoBindingStale(site.id()); // force a repair path so a PATCH is issued
+        mock.setNetlifyNextPatchOmitsRepoPath(true); // PATCH returns a partial body
+        mock.clearRequests();
+
+        HostingSite configured = netlify.configureSite(nf, site.id(), publicRequest("demo/sample-monorepo", "main"));
+        assertEquals("demo/sample-monorepo", configured.linkedRepo(),
+            "a partial PATCH response is reconciled by re-reading the site");
+        // Verified via a follow-up GET rather than trusting the partial PATCH body.
+        assertTrue(mock.count("GET", "/nf/sites/" + site.id()) >= 1, "a verifying re-read was performed");
+    }
+
+    @Test
+    void netlifyConfigureIsIdempotentOnRepeatedRetries() {
+        HostingSite site = createFrontend();
+        mock.markNetlifyRepoLinkedViaGithubApp(site.id());
+        mock.clearRequests();
+
+        netlify.configureSite(nf, site.id(), publicRequest("demo/sample-monorepo", "main"));
+        netlify.configureSite(nf, site.id(), publicRequest("demo/sample-monorepo", "main"));
+
+        assertEquals(0, unlinkCount(site.id()), "repeated retries never unlink a valid site");
+        assertEquals(0, mock.countExact("POST", "/nf/sites"), "no duplicate site is created");
+    }
+
+    private long unlinkCount(String siteId) {
+        return mock.countExact("PUT", "/nf/sites/" + siteId + "/unlink_repo");
+    }
+
+    private CreateSiteRequest publicRequest(String repo, String branch) {
+        return new CreateSiteRequest(null, repo, branch, "frontend", "npm run build", "dist", null, null, null, true);
+    }
+
     private HostingSite createFrontend() {
         return netlify.createSite(nf, new CreateSiteRequest("myapp-frontend", "demo/sample-monorepo", "main",
             "frontend", "npm run build", "dist", null, null, null, true));
