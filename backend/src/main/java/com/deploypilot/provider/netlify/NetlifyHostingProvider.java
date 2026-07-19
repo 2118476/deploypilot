@@ -39,6 +39,11 @@ public class NetlifyHostingProvider implements HostingProvider {
     private static final List<String> FREE_PLAN_ENV_SCOPES =
         List.of("builds", "functions", "runtime", "post-processing");
 
+    // Bounded re-read to absorb Netlify's eventual consistency after a repo PATCH.
+    // Small and finite: no long sleeps, no unbounded polling.
+    private static final int BINDING_VERIFY_MAX_RETRIES = 3;
+    private static final long BINDING_VERIFY_BACKOFF_MS = 250;
+
     private final ProviderApiClient http;
     private final String baseUrl;
     private final LogSanitizer logSanitizer;
@@ -107,33 +112,62 @@ public class NetlifyHostingProvider implements HostingProvider {
     public HostingSite configureSite(ProviderCredential credential, String siteId, CreateSiteRequest request) {
         ApiResult current = http.get(baseUrl + "/sites/" + enc(siteId), credential);
         requireSiteSuccess(current, siteId, "read");
+        JsonNode buildSettings = current.body().path("build_settings");
 
-        JsonNode currentRepo = current.body().path("build_settings");
-        boolean stalePublicBinding = request.publicRepository()
-            && (!currentRepo.path("public_repo").asBoolean(false)
-                || !currentRepo.path("deploy_key_id").asText("").isBlank());
-        if (stalePublicBinding) {
-            // Netlify can retain a deploy key from a previous/invalid repository
-            // link and rewrite an HTTPS clone through SSH, causing "Host key
-            // verification failed" even for a public GitHub repository. The
-            // official unlink operation removes that deploy key and its hooks;
-            // the PATCH below immediately relinks the same site as public.
+        // Only unlink on positive evidence that the existing binding is wrong.
+        // Absent optional fields (public_repo, deploy_key_id) mean "unknown", never
+        // "broken": a valid manual GitHub App connection legitimately omits them, and
+        // unlinking it would destroy a working link. Repair only when Netlify reports
+        // a different repository, an explicitly stale public binding, or a lingering
+        // deploy key (the classic "Host key verification failed" cause).
+        boolean wrongRepository = hasText(buildSettings, "repo_path")
+            && !repoPathMatches(buildSettings, request);
+        boolean explicitlyStalePublicBinding = request.publicRepository()
+            && isExplicitlyFalse(buildSettings, "public_repo");
+        boolean lingeringDeployKey = hasText(buildSettings, "deploy_key_id");
+        boolean needsRepair = wrongRepository || explicitlyStalePublicBinding || lingeringDeployKey;
+
+        if (needsRepair) {
             ApiResult unlinked = http.put(baseUrl + "/sites/" + enc(siteId) + "/unlink_repo", credential);
-            requireSiteSuccess(unlinked, siteId, "clear stale repository credentials from");
+            requireSiteSuccess(unlinked, siteId, "clear the stale repository binding from");
         }
 
-        ApiResult r = http.patch(baseUrl + "/sites/" + enc(siteId),
+        // Re-assert the intended repository configuration. This is idempotent for an
+        // already-correct site and never carries build_settings/env (the removed
+        // legacy contract). For a private repository, repoInfo omits public_repo so
+        // an authorised GitHub App connection is preserved, not forced public.
+        ApiResult patched = http.patch(baseUrl + "/sites/" + enc(siteId),
             Map.of("repo", repoInfo(request)), credential);
-        requireSiteSuccess(r, siteId, "update repository settings for");
-        if (request.publicRepository()) {
-            JsonNode configured = r.body().path("build_settings");
-            if (!configured.path("public_repo").asBoolean(false)
-                || !configured.path("deploy_key_id").asText("").isBlank()) {
-                throw new ProviderException.UnexpectedResult(
-                    "Netlify did not relink the site as a public repository. Retry after the site configuration refreshes.");
+        requireSiteSuccess(patched, siteId, "update repository settings for");
+
+        // Netlify may return a partial or eventually-consistent object from the PATCH.
+        // Confirm the binding on the stable repo_path/repo_branch fields with a short,
+        // bounded re-read instead of trusting the immediate body or an absent optional
+        // field. Optional fields being absent is tolerated; only a genuinely wrong or
+        // missing repo_path (after the retries) is a real failure.
+        return verifyRepositoryBinding(credential, siteId, request, patched.body());
+    }
+
+    private HostingSite verifyRepositoryBinding(ProviderCredential credential, String siteId,
+                                                CreateSiteRequest request, JsonNode initial) {
+        JsonNode body = initial;
+        for (int attempt = 0; attempt <= BINDING_VERIFY_MAX_RETRIES; attempt++) {
+            JsonNode bs = body.path("build_settings");
+            if (repoPathMatches(bs, request) && branchCompatible(bs, request)) {
+                return toSite(body);
             }
+            if (attempt == BINDING_VERIFY_MAX_RETRIES) break;
+            if (attempt > 0) sleep(BINDING_VERIFY_BACKOFF_MS); // no wait before the first re-read
+            ApiResult reread = http.get(baseUrl + "/sites/" + enc(siteId), credential);
+            requireSiteSuccess(reread, siteId, "re-read");
+            body = reread.body();
         }
-        return toSite(r.body());
+        JsonNode bs = body.path("build_settings");
+        throw new ProviderException.UnexpectedResult(
+            "Netlify site " + siteId + " is not linked to " + request.repoFullName()
+                + " after configuration (repo_path " + presence(bs, "repo_path")
+                + ", repo_branch " + presence(bs, "repo_branch")
+                + "). Retry once Netlify finishes refreshing the site.");
     }
 
     /**
@@ -387,6 +421,47 @@ public class NetlifyHostingProvider implements HostingProvider {
         String url = firstNonBlank(node.path("ssl_url").asText(null), node.path("url").asText(null), null);
         String linkedRepo = node.path("build_settings").path("repo_path").asText(null);
         return new HostingSite(node.path("id").asText(null), node.path("name").asText(null), url, blankToNull(linkedRepo));
+    }
+
+    // ---------- repository-binding inspection (field-presence aware) ----------
+
+    private static boolean repoPathMatches(JsonNode buildSettings, CreateSiteRequest request) {
+        String linked = text(buildSettings, "repo_path");
+        return linked != null && linked.equalsIgnoreCase(request.repoFullName());
+    }
+
+    /** A configured branch is compatible when it matches, or when either side is unspecified. */
+    private static boolean branchCompatible(JsonNode buildSettings, CreateSiteRequest request) {
+        String linked = text(buildSettings, "repo_branch");
+        String wanted = request.branch();
+        return linked == null || wanted == null || wanted.isBlank() || linked.equalsIgnoreCase(wanted);
+    }
+
+    /** A field carrying a non-blank string value, or null when absent/blank. */
+    private static String text(JsonNode node, String field) {
+        JsonNode v = node.get(field);
+        if (v == null || v.isNull()) return null;
+        String s = v.asText();
+        return s == null || s.isBlank() ? null : s;
+    }
+
+    private static boolean hasText(JsonNode node, String field) {
+        return text(node, field) != null;
+    }
+
+    /** True only when the field is present AND explicitly the boolean {@code false}. */
+    private static boolean isExplicitlyFalse(JsonNode node, String field) {
+        JsonNode v = node.get(field);
+        return v != null && v.isBoolean() && !v.booleanValue();
+    }
+
+    /** "present"/"absent" — safe to surface (never a token, secret or value). */
+    private static String presence(JsonNode node, String field) {
+        return hasText(node, field) ? "present" : "absent";
+    }
+
+    private static void sleep(long ms) {
+        try { Thread.sleep(ms); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
     }
 
     private DeploymentState mapState(String state) {

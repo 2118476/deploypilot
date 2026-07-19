@@ -49,6 +49,9 @@ public class MockProviderServer implements AutoCloseable {
     private final java.util.Set<String> netlifyHiddenEnvKeys = new java.util.concurrent.CopyOnWriteArraySet<>();
     // Optional custom body returned by the next simulated env failure (for sanitisation tests).
     private volatile String netlifyEnvErrorBody = null;
+    // When true, the next site PATCH returns a partial (repo_path-less) body while
+    // still updating state, simulating Netlify's eventual consistency.
+    private volatile boolean netlifyNextPatchOmitsRepoPath = false;
     // Supabase simulation switches.
     public static final String SUPABASE_SERVICE_ROLE_MARKER = "service-role-SECRET-key";
     private volatile boolean supabaseBillingRequired = false;
@@ -112,6 +115,20 @@ public class MockProviderServer implements AutoCloseable {
             site.put("deploy_key_id", "nf-stale-deploy-key");
         }
     }
+    /**
+     * Simulate a manually repaired GitHub App connection: the repository is linked,
+     * but the optional legacy fields (public_repo, deploy_key_id) are absent from the
+     * API response — exactly the shape that caused the false relink failure.
+     */
+    public void markNetlifyRepoLinkedViaGithubApp(String siteId) {
+        Map<String, Object> site = netlifySites.get(siteId);
+        if (site != null) {
+            site.remove("public_repo");
+            site.remove("deploy_key_id");
+        }
+    }
+    /** Make the next site PATCH return a partial body (no repo_path) while updating state. */
+    public void setNetlifyNextPatchOmitsRepoPath(boolean v) { this.netlifyNextPatchOmitsRepoPath = v; }
     /** Clears only the recorded requests, keeping provider state (created sites/services). */
     public void clearRequests() { requests.clear(); }
     /** Full reset: requests and provider state. */
@@ -129,6 +146,7 @@ public class MockProviderServer implements AutoCloseable {
         netlifyEnvFailuresRemaining = 0;
         netlifyHiddenEnvKeys.clear();
         netlifyEnvErrorBody = null;
+        netlifyNextPatchOmitsRepoPath = false;
         supabaseBillingRequired = false;
         supabaseQueryFail = false;
         supabaseRateLimitRemaining = 0;
@@ -223,6 +241,7 @@ public class MockProviderServer implements AutoCloseable {
             site.put("account_id", "nf-acct-1");
             site.put("ssl_url", liveFrontendUrl());
             site.put("repo_path", repoPath);
+            site.put("repo_branch", extractOr(body, "\"repo_branch\"\\s*:\\s*\"([^\"]+)\"", "main"));
             site.put("public_repo", body.contains("\"public_repo\":true"));
             site.put("deploy_key_id", "");
             site.put("env", new LinkedHashMap<String, Object>());
@@ -239,8 +258,17 @@ public class MockProviderServer implements AutoCloseable {
                 return;
             }
             site.put("repo_path", extract(body, "\"repo_path\"\\s*:\\s*\"([^\"]+)\""));
+            site.put("repo_branch", extractOr(body, "\"repo_branch\"\\s*:\\s*\"([^\"]+)\"", str(site.get("repo_branch"))));
             site.put("public_repo", body.contains("\"public_repo\":true"));
             if (Boolean.TRUE.equals(site.get("public_repo"))) site.put("deploy_key_id", "");
+            // Simulate an eventually-consistent PATCH: state is updated, but the
+            // immediate response is partial (no repo_path), forcing a verifying GET.
+            if (netlifyNextPatchOmitsRepoPath) {
+                netlifyNextPatchOmitsRepoPath = false;
+                json(ex, 200, "{\"id\":\"" + id + "\",\"name\":\"" + str(site.get("name")) + "\",\"ssl_url\":\""
+                    + str(site.get("ssl_url")) + "\",\"account_id\":\"nf-acct-1\",\"build_settings\":{}}");
+                return;
+            }
             json(ex, 200, netlifySiteJson(site));
         } else if (p.matches("/sites/[^/]+/unlink_repo") && method.equals("PUT")) {
             String id = p.substring("/sites/".length(), p.length() - "/unlink_repo".length());
@@ -334,10 +362,22 @@ public class MockProviderServer implements AutoCloseable {
     }
 
     private String netlifySiteJson(Map<String, Object> s) {
+        // Optional fields are only emitted when the site actually holds them — the real
+        // Netlify API omits public_repo/deploy_key_id for GitHub App connections, and
+        // may omit repo_branch. Tests rely on this to exercise absent-field handling.
+        StringBuilder bs = new StringBuilder("{\"repo_path\":\"").append(str(s.get("repo_path"))).append("\"");
+        if (s.containsKey("repo_branch")) {
+            bs.append(",\"repo_branch\":\"").append(str(s.get("repo_branch"))).append("\"");
+        }
+        if (s.containsKey("public_repo")) {
+            bs.append(",\"public_repo\":").append(Boolean.TRUE.equals(s.get("public_repo")));
+        }
+        if (s.containsKey("deploy_key_id")) {
+            bs.append(",\"deploy_key_id\":\"").append(str(s.get("deploy_key_id"))).append("\"");
+        }
+        bs.append("}");
         return "{\"id\":\"" + s.get("id") + "\",\"name\":\"" + s.get("name") + "\",\"ssl_url\":\"" + s.get("ssl_url")
-            + "\",\"account_id\":\"" + s.get("account_id") + "\",\"build_settings\":{\"repo_path\":\""
-            + str(s.get("repo_path")) + "\",\"public_repo\":" + Boolean.TRUE.equals(s.get("public_repo"))
-            + ",\"deploy_key_id\":\"" + str(s.get("deploy_key_id")) + "\"}}";
+            + "\",\"account_id\":\"" + s.get("account_id") + "\",\"build_settings\":" + bs + "}";
     }
 
     private boolean validNetlifyRepoPayload(String body) {
