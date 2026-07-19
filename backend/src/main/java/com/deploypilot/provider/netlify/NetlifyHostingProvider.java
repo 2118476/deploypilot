@@ -124,10 +124,33 @@ public class NetlifyHostingProvider implements HostingProvider {
             || lingeringDeployKey || wrongPublicRepoUrl;
 
         if (needsRepair) {
-            ApiResult unlinked = http.put(baseUrl + "/sites/" + enc(siteId) + "/unlink_repo", credential);
-            requireSiteSuccess(unlinked, siteId, "clear the stale repository binding from");
+            unlinkRepository(credential, siteId);
         }
 
+        return applyRepositoryConfiguration(credential, siteId, request);
+    }
+
+    /**
+     * A failed Netlify deploy is stronger evidence than the site metadata response:
+     * GitHub App connections legitimately omit repo_url/public_repo/deploy_key_id,
+     * but a "Host key verification failed" build proves the hidden clone binding is
+     * stale. In that case explicitly unlink first (which removes deploy keys), then
+     * relink the public HTTPS repository.
+     */
+    @Override
+    public HostingSite repairRepositoryBinding(ProviderCredential credential, String siteId,
+                                               CreateSiteRequest request) {
+        unlinkRepository(credential, siteId);
+        return applyRepositoryConfiguration(credential, siteId, request);
+    }
+
+    private void unlinkRepository(ProviderCredential credential, String siteId) {
+        ApiResult unlinked = http.put(baseUrl + "/sites/" + enc(siteId) + "/unlink_repo", credential);
+        requireSiteSuccess(unlinked, siteId, "clear the stale repository binding from");
+    }
+
+    private HostingSite applyRepositoryConfiguration(ProviderCredential credential, String siteId,
+                                                     CreateSiteRequest request) {
         // Re-assert the intended repository configuration. This is idempotent for an
         // already-correct site and never carries build_settings/env (the removed
         // legacy contract). For a private repository, repoInfo omits public_repo so

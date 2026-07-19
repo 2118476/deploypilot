@@ -33,9 +33,11 @@ public class MockProviderServer implements AutoCloseable {
     private final List<Recorded> requests = new CopyOnWriteArrayList<>();
     // Simple in-memory provider state.
     private final Map<String, Map<String, Object>> netlifySites = new LinkedHashMap<>();
+    private final Map<String, Boolean> netlifyDeployHostKeyFailures = new LinkedHashMap<>();
     private final Map<String, Map<String, Object>> renderServices = new LinkedHashMap<>();
     private final Map<String, Map<String, Object>> supabaseProjects = new LinkedHashMap<>();
     private int netlifySeq = 0;
+    private int netlifyDeploySeq = 0;
     private int renderSeq = 0;
     private int supabaseSeq = 0;
     // When true, GitHub reports the config files already match (no PR needed).
@@ -44,6 +46,7 @@ public class MockProviderServer implements AutoCloseable {
     private volatile boolean gitHubMetadataFailure = false;    // repo metadata 500s; default branch is master
     private volatile int netlifyEnvFailuresRemaining = 0;
     private volatile int netlifyEnvForbiddenRemaining = 0;
+    private volatile int netlifyHostKeyFailuresRemaining = 0;
     // Keys that already exist on the account but are NOT returned by the env listing
     // (e.g. created earlier or under the legacy site-level system). Creating them 400s
     // "already exists"; updating them succeeds and moves them into the visible env.
@@ -106,6 +109,7 @@ public class MockProviderServer implements AutoCloseable {
     public void setGitHubMetadataFailure(boolean v) { this.gitHubMetadataFailure = v; }
     public void setNetlifyEnvFailures(int calls) { this.netlifyEnvFailuresRemaining = calls; }
     public void setNetlifyEnvForbidden(int calls) { this.netlifyEnvForbiddenRemaining = calls; }
+    public void setNetlifyHostKeyFailures(int calls) { this.netlifyHostKeyFailuresRemaining = calls; }
     /** Body returned by the next simulated env failure (to exercise error sanitisation). */
     public void setNetlifyEnvErrorBody(String body) { this.netlifyEnvErrorBody = body; }
     /** Mark a variable as already existing on the account but hidden from the env listing. */
@@ -146,9 +150,11 @@ public class MockProviderServer implements AutoCloseable {
     public void reset() {
         requests.clear();
         netlifySites.clear();
+        netlifyDeployHostKeyFailures.clear();
         renderServices.clear();
         supabaseProjects.clear();
         netlifySeq = 0;
+        netlifyDeploySeq = 0;
         renderSeq = 0;
         supabaseSeq = 0;
         gitHubFilesAlreadyPresent = false;
@@ -156,6 +162,7 @@ public class MockProviderServer implements AutoCloseable {
         gitHubMetadataFailure = false;
         netlifyEnvFailuresRemaining = 0;
         netlifyEnvForbiddenRemaining = 0;
+        netlifyHostKeyFailuresRemaining = 0;
         netlifyHiddenEnvKeys.clear();
         netlifyEnvErrorBody = null;
         netlifyNextPatchOmitsRepoPath = false;
@@ -374,9 +381,22 @@ public class MockProviderServer implements AutoCloseable {
             env.put(key, true);
             json(ex, 200, body);
         } else if (p.matches("/sites/[^/]+/builds") && method.equals("POST")) {
-            json(ex, 201, "{\"id\":\"nf-build-1\",\"deploy_id\":\"nf-deploy-1\"}");
+            String deployId = "nf-deploy-" + (++netlifyDeploySeq);
+            boolean hostKeyFailure = netlifyHostKeyFailuresRemaining > 0;
+            if (hostKeyFailure) netlifyHostKeyFailuresRemaining--;
+            netlifyDeployHostKeyFailures.put(deployId, hostKeyFailure);
+            json(ex, 201, "{\"id\":\"nf-build-" + netlifyDeploySeq
+                + "\",\"deploy_id\":\"" + deployId + "\"}");
         } else if (p.matches("/sites/[^/]+/deploys/[^/]+")) {
-            json(ex, 200, "{\"state\":\"ready\",\"ssl_url\":\"" + liveFrontendUrl() + "\",\"summary\":{\"status\":\"ready\"}}");
+            String deployId = p.substring(p.lastIndexOf('/') + 1);
+            if (Boolean.TRUE.equals(netlifyDeployHostKeyFailures.get(deployId))) {
+                json(ex, 200, "{\"state\":\"error\",\"error_message\":\"Failed during stage 'preparing repo': "
+                    + "Unable to access repository. Host key verification failed. fatal: Could not read from remote repository. "
+                    + "exit status 128\",\"summary\":{\"status\":\"Failed to prepare repo\"}}");
+            } else {
+                json(ex, 200, "{\"state\":\"ready\",\"ssl_url\":\"" + liveFrontendUrl()
+                    + "\",\"summary\":{\"status\":\"ready\"}}");
+            }
         } else if (p.matches("/deploys/[^/]+/cancel")) {
             json(ex, 200, "{}");
         } else {

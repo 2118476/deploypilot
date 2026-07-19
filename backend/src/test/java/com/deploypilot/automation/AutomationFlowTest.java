@@ -201,6 +201,32 @@ class AutomationFlowTest {
             "retry must resume using the current Netlify environment endpoint");
     }
 
+    @Test
+    void frontendDeployRepairsHostKeyFailureAndRetriesExactlyOnce() throws Exception {
+        String token = register();
+        connectAll(token);
+        long projectId = importRepo(token);
+        saveSecret(token, projectId, "DATABASE_URL", DB_URL_VALUE);
+        MOCK.setNetlifyHostKeyFailures(1);
+
+        JsonNode run = runToCompletion(token, projectId);
+
+        assertEquals("SUCCEEDED", run.path("status").asText(), () -> "run failed: "
+            + run.path("failureReason").asText() + " steps=" + run.path("steps"));
+        assertEquals(2, MOCK.count("POST", "/nf/sites/nf-site-1/builds"),
+            "one failed clone plus one bounded retry");
+        assertEquals(1, MOCK.countExact("PUT", "/nf/sites/nf-site-1/unlink_repo"),
+            "deploy-log evidence forces one stale repository unlink");
+        assertTrue(MOCK.requests().stream().anyMatch(r ->
+            r.method().equals("POST") && r.path().startsWith("/nf/sites/nf-site-1/builds")
+                && r.body().contains("\"clear_cache\":true")),
+            "the repaired retry must clear Netlify's stale repository cache");
+        JsonNode deployStep = java.util.stream.StreamSupport.stream(run.path("steps").spliterator(), false)
+            .filter(s -> "frontend.deploy".equals(s.path("id").asText()))
+            .findFirst().orElseThrow();
+        assertTrue(deployStep.path("detail").asText().contains("relinked the public GitHub HTTPS repository"));
+    }
+
     // ==================== confirmation & safety ====================
 
     @Test
