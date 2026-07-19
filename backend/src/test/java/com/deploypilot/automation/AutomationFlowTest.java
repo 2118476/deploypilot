@@ -139,13 +139,16 @@ class AutomationFlowTest {
         saveSecret(token, projectId, "DATABASE_URL", DB_URL_VALUE);
         runToCompletion(token, projectId);
 
-        // The frontend API URL must be the backend URL + /api, proving the backend
-        // was deployed and its URL captured before the frontend variables were set.
+        // The frontend API URL must be the backend origin exactly. The application
+        // owns its route prefix; adding /api here would create /api/api requests for
+        // clients such as JobPilot that already append /api in their request paths.
         String netlifyEnvBodies = MOCK.requests().stream()
             .filter(r -> r.path().contains("/nf/accounts/") && r.path().contains("/env"))
             .map(MockProviderServer.Recorded::body).reduce("", (a, b) -> a + b);
-        assertTrue(netlifyEnvBodies.contains(MOCK.liveBackendUrl() + "/api"),
+        assertTrue(netlifyEnvBodies.contains(MOCK.liveBackendUrl()),
             "frontend API URL is derived from the captured backend URL");
+        assertFalse(netlifyEnvBodies.contains(MOCK.liveBackendUrl() + "/api"),
+            "DeployPilot must not guess an API route prefix");
     }
 
     // ==================== idempotency / duplicate prevention ====================

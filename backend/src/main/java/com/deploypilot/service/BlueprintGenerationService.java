@@ -342,7 +342,7 @@ public class BlueprintGenerationService {
             m.setDependsOnOutput("FRONTEND_PUBLIC_URL");
         } else if (PUBLIC_PREFIX.matcher(name).find() && API_URL_NAME.matcher(name).find()) {
             m.setValueSource("Backend public URL — available after the backend deploy");
-            m.setExpectedFormat("${BACKEND_PUBLIC_URL}<api base path, e.g. /api>");
+            m.setExpectedFormat("${BACKEND_PUBLIC_URL}");
             m.setDependsOnOutput("BACKEND_PUBLIC_URL");
         } else if (name.matches("(?i)^port$")) {
             m.setValueSource("Set automatically by the hosting platform — do not configure manually");
@@ -745,8 +745,10 @@ public class BlueprintGenerationService {
             "Documents required variable names for other developers without exposing values. Real .env files must stay gitignored.");
 
         String gitignore = "# Dependencies and build output\nnode_modules/\ndist/\nbuild/\ntarget/\n\n# Environment files — never commit real values\n.env\n.env.local\n.env.*.local\n!.env.example\n";
+        boolean gitignoreExists = analyzed.contains(".gitignore") || currentFiles.containsKey(".gitignore");
+        String currentGitignore = currentFiles.get(".gitignore");
         addPreview(bp, ".gitignore", "Keep secrets and build output out of Git",
-            null, null, gitignore,
+            gitignoreExists, currentGitignore, gitignoreExists ? currentGitignore : gitignore,
             "Ensures real environment files and build artifacts are never committed.");
     }
 

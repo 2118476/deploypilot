@@ -165,6 +165,7 @@ public class DeploymentBlueprintService {
         try {
             List<String> candidates = detection.getAnalyzedFiles().stream()
                 .filter(p -> p.equals("netlify.toml") || p.equals("render.yaml")
+                    || p.equals(".gitignore")
                     || p.equals("Dockerfile") || p.endsWith("/Dockerfile"))
                 .toList();
             if (candidates.isEmpty()) return contents;

@@ -286,8 +286,7 @@ public class DeploymentExecutor {
         String branch = "deploypilot/deployment-config";
         List<CommitFile> files = new ArrayList<>();
         for (BlueprintResult.FilePreview fp : bp.getFilePreviews()) {
-            if (fp.getSuggestedContent() != null
-                && (!Boolean.TRUE.equals(fp.getExists()) || (fp.getDiff() != null && !fp.getDiff().isBlank()))) {
+            if (fp.getSuggestedContent() != null && Boolean.FALSE.equals(fp.getExists())) {
                 files.add(new CommitFile(fp.getPath(), fp.getSuggestedContent()));
             }
         }
@@ -541,10 +540,13 @@ public class DeploymentExecutor {
         }
         Optional<String> supplied = secretService.getValue(projectId, name);
         if (supplied.isPresent()) return supplied.get();
-        // The frontend API URL is derived from the captured backend URL.
+        // The frontend API URL is the captured backend origin. Do not guess an
+        // /api suffix: many clients (including JobPilot) append /api to request
+        // paths themselves, and forcing it here produces /api/api endpoints.
         if (m != null && "BACKEND_PUBLIC_URL".equals(m.getDependsOnOutput())) {
             String backend = outputs.get(OUT_BACKEND_URL);
-            return backend == null ? null : backend + "/api";
+            if (backend == null) return null;
+            return backend.endsWith("/") ? backend.substring(0, backend.length() - 1) : backend;
         }
         // The backend CORS/frontend-origin is the captured frontend URL.
         if (m != null && ("FRONTEND_PUBLIC_URL".equals(m.getDependsOnOutput()) || isCorsVar(m))) {

@@ -671,10 +671,10 @@ public class ActionPlanService {
     private List<String> proposedConfigFiles(BlueprintResult bp) {
         List<String> files = new ArrayList<>();
         for (BlueprintResult.FilePreview fp : bp.getFilePreviews()) {
-            // Only files that are new or differ from what's in the repo need a PR.
-            if (fp.getSuggestedContent() != null && !Boolean.TRUE.equals(fp.getExists())) {
-                files.add(fp.getPath());
-            } else if (fp.getDiff() != null && !fp.getDiff().isBlank()) {
+            // Automation may add a genuinely missing file, but it never replaces an
+            // existing repository-owned deployment file with a generic template.
+            // Diffs for existing files remain review-only in the blueprint.
+            if (fp.getSuggestedContent() != null && Boolean.FALSE.equals(fp.getExists())) {
                 files.add(fp.getPath());
             }
         }
