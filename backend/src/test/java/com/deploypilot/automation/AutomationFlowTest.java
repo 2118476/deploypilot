@@ -202,29 +202,24 @@ class AutomationFlowTest {
     }
 
     @Test
-    void frontendDeployRepairsHostKeyFailureAndRetriesExactlyOnce() throws Exception {
+    void frontendDeployHostKeyFailurePreservesAuthorizedRepositoryBinding() throws Exception {
         String token = register();
         connectAll(token);
         long projectId = importRepo(token);
         saveSecret(token, projectId, "DATABASE_URL", DB_URL_VALUE);
         MOCK.setNetlifyHostKeyFailures(1);
 
-        JsonNode run = runToCompletion(token, projectId);
+        JsonNode plan = plan(token, projectId);
+        JsonNode confirmation = confirm(token, projectId, plan.path("planHash").asText());
+        long runId = confirmation.path("runId").asLong();
+        execute(token, projectId, runId, confirmation.path("nonce").asText());
+        JsonNode run = pollRun(token, projectId, runId);
 
-        assertEquals("SUCCEEDED", run.path("status").asText(), () -> "run failed: "
-            + run.path("failureReason").asText() + " steps=" + run.path("steps"));
-        assertEquals(2, MOCK.count("POST", "/nf/sites/nf-site-1/builds"),
-            "one failed clone plus one bounded retry");
-        assertEquals(1, MOCK.countExact("PUT", "/nf/sites/nf-site-1/unlink_repo"),
-            "deploy-log evidence forces one stale repository unlink");
-        assertTrue(MOCK.requests().stream().anyMatch(r ->
-            r.method().equals("POST") && r.path().startsWith("/nf/sites/nf-site-1/builds")
-                && r.body().contains("\"clear_cache\":true")),
-            "the repaired retry must clear Netlify's stale repository cache");
-        JsonNode deployStep = java.util.stream.StreamSupport.stream(run.path("steps").spliterator(), false)
-            .filter(s -> "frontend.deploy".equals(s.path("id").asText()))
-            .findFirst().orElseThrow();
-        assertTrue(deployStep.path("detail").asText().contains("relinked the public GitHub HTTPS repository"));
+        assertEquals("FAILED", run.path("status").asText());
+        assertEquals(1, MOCK.count("POST", "/nf/sites/nf-site-1/builds"),
+            "DeployPilot must not trigger another clone with an unauthorised API-only binding");
+        assertEquals(0, MOCK.countExact("PUT", "/nf/sites/nf-site-1/unlink_repo"),
+            "a clone failure must preserve the GitHub App connection for manual relinking");
     }
 
     // ==================== confirmation & safety ====================
