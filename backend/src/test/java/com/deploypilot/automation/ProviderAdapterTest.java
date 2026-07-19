@@ -158,6 +158,11 @@ class ProviderAdapterTest {
             "new environment variables use Netlify's account environment endpoint");
         assertEquals(1, mock.countExact("PUT", "/nf/accounts/nf-acct-1/env/VITE_API_URL"),
             "existing environment variables are updated idempotently");
+        assertTrue(mock.to("/nf/accounts/nf-acct-1/env").stream()
+            .filter(r -> r.method().equals("POST") || r.method().equals("PUT"))
+            .allMatch(r -> r.body().contains(
+                "\"scopes\":[\"builds\",\"functions\",\"runtime\",\"post-processing\"]")),
+            "free-plan environment variables must include every Netlify scope");
         assertEquals(1, mock.countExact("PUT", "/nf/sites/" + site.id() + "/unlink_repo"),
             "a stale deploy key is cleared before relinking the same public site");
         assertTrue(mock.requests().stream()
