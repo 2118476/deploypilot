@@ -14,8 +14,25 @@ public record CreateSiteRequest(
     String publishDirectory,
     String startCommand,
     String runtime,
-    String healthCheckPath
+    String healthCheckPath,
+    boolean publicRepository
 ) {
+    /** Compatibility constructor for providers that do not need repository visibility. */
+    public CreateSiteRequest(
+        String name,
+        String repoFullName,
+        String branch,
+        String rootDirectory,
+        String buildCommand,
+        String publishDirectory,
+        String startCommand,
+        String runtime,
+        String healthCheckPath
+    ) {
+        this(name, repoFullName, branch, rootDirectory, buildCommand, publishDirectory,
+            startCommand, runtime, healthCheckPath, false);
+    }
+
     /** Paid plans are never auto-selected; this is always false in this stage. */
     public boolean paidPlan() { return false; }
 }

@@ -42,6 +42,7 @@ public class MockProviderServer implements AutoCloseable {
     private volatile boolean gitHubFilesAlreadyPresent = false;
     private volatile boolean gitHubRepoInaccessible = false;   // token cannot see the repo at all
     private volatile boolean gitHubMetadataFailure = false;    // repo metadata 500s; default branch is master
+    private volatile int netlifyEnvFailuresRemaining = 0;
     // Supabase simulation switches.
     public static final String SUPABASE_SERVICE_ROLE_MARKER = "service-role-SECRET-key";
     private volatile boolean supabaseBillingRequired = false;
@@ -93,6 +94,7 @@ public class MockProviderServer implements AutoCloseable {
     public void setGitHubFilesAlreadyPresent(boolean present) { this.gitHubFilesAlreadyPresent = present; }
     public void setGitHubRepoInaccessible(boolean v) { this.gitHubRepoInaccessible = v; }
     public void setGitHubMetadataFailure(boolean v) { this.gitHubMetadataFailure = v; }
+    public void setNetlifyEnvFailures(int calls) { this.netlifyEnvFailuresRemaining = calls; }
     /** Clears only the recorded requests, keeping provider state (created sites/services). */
     public void clearRequests() { requests.clear(); }
     /** Full reset: requests and provider state. */
@@ -107,6 +109,7 @@ public class MockProviderServer implements AutoCloseable {
         gitHubFilesAlreadyPresent = false;
         gitHubRepoInaccessible = false;
         gitHubMetadataFailure = false;
+        netlifyEnvFailuresRemaining = 0;
         supabaseBillingRequired = false;
         supabaseQueryFail = false;
         supabaseRateLimitRemaining = 0;
@@ -189,11 +192,16 @@ public class MockProviderServer implements AutoCloseable {
         if (p.equals("/user")) {
             json(ex, 200, "{\"id\":\"nf-acct-1\",\"full_name\":\"Netlify User\",\"email\":\"nf@example.com\"}");
         } else if (p.equals("/sites") && method.equals("POST")) {
+            if (!validNetlifyRepoPayload(body)) {
+                json(ex, 400, "{\"message\":\"invalid repository payload\"}");
+                return;
+            }
             String id = "nf-site-" + (++netlifySeq);
-            String repoPath = extract(body, "\"repo\"\\s*:\\s*\"([^\"]+)\"");
+            String repoPath = extract(body, "\"repo_path\"\\s*:\\s*\"([^\"]+)\"");
             Map<String, Object> site = new LinkedHashMap<>();
             site.put("id", id);
             site.put("name", extractOr(body, "\"name\"\\s*:\\s*\"([^\"]+)\"", id));
+            site.put("account_id", "nf-acct-1");
             site.put("ssl_url", liveFrontendUrl());
             site.put("repo_path", repoPath);
             site.put("env", new LinkedHashMap<String, Object>());
@@ -205,11 +213,55 @@ public class MockProviderServer implements AutoCloseable {
             String id = p.substring("/sites/".length());
             Map<String, Object> site = netlifySites.get(id);
             if (site == null) { json(ex, 404, "{}"); return; }
+            if (!validNetlifyRepoPayload(body) || body.contains("\"build_settings\"")) {
+                json(ex, 400, "{\"message\":\"legacy site update rejected\"}");
+                return;
+            }
+            site.put("repo_path", extract(body, "\"repo_path\"\\s*:\\s*\"([^\"]+)\""));
             json(ex, 200, netlifySiteJson(site));
         } else if (p.matches("/sites/[^/]+") && method.equals("GET")) {
             String id = p.substring("/sites/".length());
             Map<String, Object> site = netlifySites.get(id);
             json(ex, site == null ? 404 : 200, site == null ? "{}" : netlifySiteJson(site));
+        } else if (p.equals("/accounts/nf-acct-1/env") && method.equals("GET")) {
+            Map<String, Object> site = siteFromQuery(ex);
+            if (site == null) { json(ex, 404, "{}"); return; }
+            @SuppressWarnings("unchecked")
+            Map<String, Object> env = (Map<String, Object>) site.get("env");
+            StringBuilder out = new StringBuilder("[");
+            boolean first = true;
+            for (String key : env.keySet()) {
+                if (!first) out.append(',');
+                out.append("{\"key\":\"").append(key).append("\",\"values\":[]}");
+                first = false;
+            }
+            json(ex, 200, out.append(']').toString());
+        } else if (p.equals("/accounts/nf-acct-1/env") && method.equals("POST")) {
+            if (netlifyEnvFailuresRemaining > 0) {
+                netlifyEnvFailuresRemaining--;
+                json(ex, 400, "{\"message\":\"simulated Netlify env failure\"}");
+                return;
+            }
+            Map<String, Object> site = siteFromQuery(ex);
+            if (site == null) { json(ex, 404, "{}"); return; }
+            @SuppressWarnings("unchecked")
+            Map<String, Object> env = (Map<String, Object>) site.get("env");
+            java.util.regex.Matcher keys = java.util.regex.Pattern.compile("\"key\"\\s*:\\s*\"([^\"]+)\"").matcher(body);
+            while (keys.find()) env.put(keys.group(1), true);
+            json(ex, 201, body);
+        } else if (p.matches("/accounts/nf-acct-1/env/[^/]+") && method.equals("PUT")) {
+            if (netlifyEnvFailuresRemaining > 0) {
+                netlifyEnvFailuresRemaining--;
+                json(ex, 400, "{\"message\":\"simulated Netlify env failure\"}");
+                return;
+            }
+            Map<String, Object> site = siteFromQuery(ex);
+            if (site == null) { json(ex, 404, "{}"); return; }
+            @SuppressWarnings("unchecked")
+            Map<String, Object> env = (Map<String, Object>) site.get("env");
+            String key = p.substring("/accounts/nf-acct-1/env/".length());
+            env.put(key, true);
+            json(ex, 200, body);
         } else if (p.matches("/sites/[^/]+/builds") && method.equals("POST")) {
             json(ex, 201, "{\"id\":\"nf-build-1\",\"deploy_id\":\"nf-deploy-1\"}");
         } else if (p.matches("/sites/[^/]+/deploys/[^/]+")) {
@@ -234,7 +286,23 @@ public class MockProviderServer implements AutoCloseable {
 
     private String netlifySiteJson(Map<String, Object> s) {
         return "{\"id\":\"" + s.get("id") + "\",\"name\":\"" + s.get("name") + "\",\"ssl_url\":\"" + s.get("ssl_url")
-            + "\",\"build_settings\":{\"repo_path\":\"" + str(s.get("repo_path")) + "\"}}";
+            + "\",\"account_id\":\"" + s.get("account_id") + "\",\"build_settings\":{\"repo_path\":\""
+            + str(s.get("repo_path")) + "\"}}";
+    }
+
+    private boolean validNetlifyRepoPayload(String body) {
+        return body.contains("\"repo_path\"")
+            && body.contains("\"repo_branch\"")
+            && body.contains("\"repo_url\"")
+            && !body.matches("(?s).*\"repo\"\\s*:\\s*\".*")
+            && !body.matches("(?s).*\"branch\"\\s*:\\s*\".*");
+    }
+
+    private Map<String, Object> siteFromQuery(HttpExchange ex) {
+        String query = ex.getRequestURI().getRawQuery();
+        if (query == null || !query.startsWith("site_id=")) return null;
+        String id = java.net.URLDecoder.decode(query.substring("site_id=".length()), StandardCharsets.UTF_8);
+        return netlifySites.get(id);
     }
 
     // ---------- Render ----------

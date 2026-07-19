@@ -116,7 +116,7 @@ class ProviderAdapterTest {
     void netlifyDeployReachesLiveAndCapturesUrl() {
         HostingSite site = netlify.createSite(nf, new CreateSiteRequest(
             "myapp-frontend", "demo/sample-monorepo", "main", "frontend",
-            "npm run build", "dist", null, null, null));
+            "npm run build", "dist", null, null, null, true));
         DeploymentStatus status = netlify.triggerDeploy(nf, site.id(), new DeployRequest("main", null, false));
         DeploymentStatus finalStatus = netlify.getDeploymentStatus(nf, site.id(), status.deploymentId());
         assertEquals(DeploymentState.LIVE, finalStatus.state());
@@ -126,9 +126,40 @@ class ProviderAdapterTest {
     @Test
     void netlifyReusesLinkedSiteInsteadOfDuplicating() {
         netlify.createSite(nf, new CreateSiteRequest("myapp-frontend", "demo/sample-monorepo", "main",
-            "frontend", "npm run build", "dist", null, null, null));
+            "frontend", "npm run build", "dist", null, null, null, true));
         List<HostingSite> sites = netlify.listSites(nf);
         assertEquals(1, sites.size());
         assertEquals("demo/sample-monorepo", sites.get(0).linkedRepo());
+    }
+
+    @Test
+    void netlifyUsesCurrentRepositoryAndEnvironmentContracts() {
+        CreateSiteRequest request = new CreateSiteRequest(
+            "myapp-frontend", "demo/sample-monorepo", "main", null,
+            "npm run build", "dist", null, null, null, true);
+        HostingSite site = netlify.createSite(nf, request);
+
+        MockProviderServer.Recorded create = mock.requests().stream()
+            .filter(r -> r.method().equals("POST") && r.path().endsWith("/nf/sites"))
+            .findFirst().orElseThrow();
+        assertTrue(create.body().contains("\"repo_path\":\"demo/sample-monorepo\""));
+        assertTrue(create.body().contains("\"repo_branch\":\"main\""));
+        assertTrue(create.body().contains("\"repo_url\":\"https://github.com/demo/sample-monorepo.git\""));
+        assertTrue(create.body().contains("\"public_repo\":true"));
+        assertFalse(create.body().contains("\"repo\":\"demo/sample-monorepo\""));
+        assertFalse(create.body().contains("\"branch\":\"main\""));
+
+        netlify.configureSite(nf, site.id(), request);
+        netlify.setEnvVars(nf, site.id(), List.of(new EnvVarInput("VITE_API_URL", "https://api.example", false)));
+        netlify.setEnvVars(nf, site.id(), List.of(new EnvVarInput("VITE_API_URL", "https://api-v2.example", false)));
+
+        assertEquals(1, mock.countExact("POST", "/nf/accounts/nf-acct-1/env"),
+            "new environment variables use Netlify's account environment endpoint");
+        assertEquals(1, mock.countExact("PUT", "/nf/accounts/nf-acct-1/env/VITE_API_URL"),
+            "existing environment variables are updated idempotently");
+        assertTrue(mock.to("/nf/sites/" + site.id()).stream()
+            .filter(r -> r.method().equals("PATCH"))
+            .allMatch(r -> !r.body().contains("build_settings") && !r.body().contains("\"env\"")),
+            "site updates must never use the removed build_settings.env contract");
     }
 }

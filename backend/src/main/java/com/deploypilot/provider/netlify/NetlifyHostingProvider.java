@@ -82,17 +82,9 @@ public class NetlifyHostingProvider implements HostingProvider {
 
     @Override
     public HostingSite createSite(ProviderCredential credential, CreateSiteRequest request) {
-        Map<String, Object> repo = new LinkedHashMap<>();
-        repo.put("provider", "github");
-        repo.put("repo", request.repoFullName());
-        repo.put("branch", request.branch());
-        if (request.buildCommand() != null) repo.put("cmd", request.buildCommand());
-        if (request.publishDirectory() != null) repo.put("dir", request.publishDirectory());
-        if (request.rootDirectory() != null && !request.rootDirectory().isBlank()) repo.put("base", request.rootDirectory());
-
         Map<String, Object> payload = new LinkedHashMap<>();
         if (request.name() != null) payload.put("name", request.name());
-        payload.put("repo", repo);
+        payload.put("repo", repoInfo(request));
 
         ApiResult r = http.post(baseUrl + "/sites", payload, credential);
         if (r.isUnauthorized()) throw new ProviderException.BadCredentials("Netlify rejected the token.");
@@ -103,16 +95,62 @@ public class NetlifyHostingProvider implements HostingProvider {
     }
 
     @Override
+    public HostingSite configureSite(ProviderCredential credential, String siteId, CreateSiteRequest request) {
+        ApiResult r = http.patch(baseUrl + "/sites/" + enc(siteId),
+            Map.of("repo", repoInfo(request)), credential);
+        if (r.isUnauthorized()) throw new ProviderException.BadCredentials("Netlify rejected the token.");
+        if (r.isNotFound()) throw new ProviderException.NotFound("Netlify site not found: " + siteId);
+        if (!r.isSuccess()) {
+            throw new ProviderException.UnexpectedResult(
+                "Could not update the Netlify repository settings (status " + r.status() + ").");
+        }
+        return toSite(r.body());
+    }
+
+    @Override
     public void setEnvVars(ProviderCredential credential, String siteId, List<EnvVarInput> vars) {
         if (vars.isEmpty()) return;
-        Map<String, String> env = new LinkedHashMap<>();
-        for (EnvVarInput v : vars) env.put(v.key(), v.value());
-        // Update the site's build environment. Values are sent in the request body
-        // only; they are never logged (ProviderApiClient logs status codes only).
-        ApiResult r = http.patch(baseUrl + "/sites/" + enc(siteId),
-            Map.of("build_settings", Map.of("env", env)), credential);
-        if (!r.isSuccess()) {
-            throw new ProviderException.UnexpectedResult("Could not set Netlify environment variables (status " + r.status() + ").");
+
+        ApiResult site = http.get(baseUrl + "/sites/" + enc(siteId), credential);
+        if (site.isUnauthorized()) throw new ProviderException.BadCredentials("Netlify rejected the token.");
+        if (site.isNotFound()) throw new ProviderException.NotFound("Netlify site not found: " + siteId);
+        if (!site.isSuccess()) {
+            throw new ProviderException.UnexpectedResult(
+                "Could not read the Netlify site before setting variables (status " + site.status() + ").");
+        }
+        String accountId = site.body().path("account_id").asText(null);
+        if (accountId == null || accountId.isBlank()) {
+            throw new ProviderException.UnexpectedResult("Could not determine the Netlify account for the site.");
+        }
+
+        String envUrl = baseUrl + "/accounts/" + enc(accountId) + "/env?site_id=" + query(siteId);
+        ApiResult current = http.get(envUrl, credential);
+        if (current.isUnauthorized()) throw new ProviderException.BadCredentials("Netlify rejected the token.");
+        if (!current.isSuccess() || !current.body().isArray()) {
+            throw new ProviderException.UnexpectedResult(
+                "Could not read Netlify environment variables (status " + current.status() + ").");
+        }
+
+        Map<String, Boolean> existing = new LinkedHashMap<>();
+        for (JsonNode node : current.body()) {
+            String key = node.path("key").asText(null);
+            if (key != null) existing.put(key, true);
+        }
+
+        List<Map<String, Object>> create = new ArrayList<>();
+        for (EnvVarInput v : vars) {
+            Map<String, Object> value = envVar(v);
+            if (existing.containsKey(v.key())) {
+                ApiResult updated = http.put(baseUrl + "/accounts/" + enc(accountId) + "/env/" + enc(v.key())
+                    + "?site_id=" + query(siteId), value, credential);
+                requireEnvSuccess(updated, "update", v.key());
+            } else {
+                create.add(value);
+            }
+        }
+        if (!create.isEmpty()) {
+            ApiResult created = http.post(envUrl, create, credential);
+            requireEnvSuccess(created, "create", null);
         }
     }
 
@@ -168,6 +206,35 @@ public class NetlifyHostingProvider implements HostingProvider {
 
     // ---------- internals ----------
 
+    private Map<String, Object> repoInfo(CreateSiteRequest request) {
+        Map<String, Object> repo = new LinkedHashMap<>();
+        repo.put("provider", "github");
+        repo.put("repo_path", request.repoFullName());
+        repo.put("repo_branch", firstNonBlank(request.branch(), null, "main"));
+        repo.put("repo_url", "https://github.com/" + request.repoFullName() + ".git");
+        if (request.publicRepository()) repo.put("public_repo", true);
+        if (request.buildCommand() != null) repo.put("cmd", request.buildCommand());
+        if (request.publishDirectory() != null) repo.put("dir", request.publishDirectory());
+        return repo;
+    }
+
+    private Map<String, Object> envVar(EnvVarInput v) {
+        Map<String, Object> env = new LinkedHashMap<>();
+        env.put("key", v.key());
+        env.put("values", List.of(Map.of("value", v.value(), "context", "all")));
+        env.put("is_secret", v.secret());
+        return env;
+    }
+
+    private void requireEnvSuccess(ApiResult r, String operation, String key) {
+        if (r.isUnauthorized()) throw new ProviderException.BadCredentials("Netlify rejected the token.");
+        if (!r.isSuccess()) {
+            String suffix = key == null ? "" : " " + key;
+            throw new ProviderException.UnexpectedResult(
+                "Could not " + operation + " Netlify environment variable" + suffix + " (status " + r.status() + ").");
+        }
+    }
+
     private HostingSite toSite(JsonNode node) {
         String url = firstNonBlank(node.path("ssl_url").asText(null), node.path("url").asText(null), null);
         String linkedRepo = node.path("build_settings").path("repo_path").asText(null);
@@ -193,6 +260,8 @@ public class NetlifyHostingProvider implements HostingProvider {
     }
 
     private static String enc(String s) { return UriUtils.encodePathSegment(s, StandardCharsets.UTF_8); }
+
+    private static String query(String s) { return UriUtils.encodeQueryParam(s, StandardCharsets.UTF_8); }
 
     private static String firstNonBlank(String a, String b, String c) {
         if (a != null && !a.isBlank()) return a;
