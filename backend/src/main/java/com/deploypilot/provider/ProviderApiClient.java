@@ -74,6 +74,11 @@ public class ProviderApiClient {
         return exchange("PUT", url, body, credential, null);
     }
 
+    /** PUT endpoint with no request body (for provider actions such as unlinking a repository). */
+    public ApiResult put(String url, ProviderCredential credential) {
+        return exchange("PUT", url, null, credential, null);
+    }
+
     public ApiResult patch(String url, Object body, ProviderCredential credential) {
         return exchange("PATCH", url, body, credential, null);
     }
