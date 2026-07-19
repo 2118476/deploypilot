@@ -95,6 +95,13 @@ public class MockProviderServer implements AutoCloseable {
     public void setGitHubRepoInaccessible(boolean v) { this.gitHubRepoInaccessible = v; }
     public void setGitHubMetadataFailure(boolean v) { this.gitHubMetadataFailure = v; }
     public void setNetlifyEnvFailures(int calls) { this.netlifyEnvFailuresRemaining = calls; }
+    public void markNetlifyRepoBindingStale(String siteId) {
+        Map<String, Object> site = netlifySites.get(siteId);
+        if (site != null) {
+            site.put("public_repo", false);
+            site.put("deploy_key_id", "nf-stale-deploy-key");
+        }
+    }
     /** Clears only the recorded requests, keeping provider state (created sites/services). */
     public void clearRequests() { requests.clear(); }
     /** Full reset: requests and provider state. */
@@ -204,6 +211,8 @@ public class MockProviderServer implements AutoCloseable {
             site.put("account_id", "nf-acct-1");
             site.put("ssl_url", liveFrontendUrl());
             site.put("repo_path", repoPath);
+            site.put("public_repo", body.contains("\"public_repo\":true"));
+            site.put("deploy_key_id", "");
             site.put("env", new LinkedHashMap<String, Object>());
             netlifySites.put(id, site);
             json(ex, 201, netlifySiteJson(site));
@@ -218,6 +227,16 @@ public class MockProviderServer implements AutoCloseable {
                 return;
             }
             site.put("repo_path", extract(body, "\"repo_path\"\\s*:\\s*\"([^\"]+)\""));
+            site.put("public_repo", body.contains("\"public_repo\":true"));
+            if (Boolean.TRUE.equals(site.get("public_repo"))) site.put("deploy_key_id", "");
+            json(ex, 200, netlifySiteJson(site));
+        } else if (p.matches("/sites/[^/]+/unlink_repo") && method.equals("PUT")) {
+            String id = p.substring("/sites/".length(), p.length() - "/unlink_repo".length());
+            Map<String, Object> site = netlifySites.get(id);
+            if (site == null) { json(ex, 404, "{}"); return; }
+            site.put("repo_path", "");
+            site.put("public_repo", false);
+            site.put("deploy_key_id", "");
             json(ex, 200, netlifySiteJson(site));
         } else if (p.matches("/sites/[^/]+") && method.equals("GET")) {
             String id = p.substring("/sites/".length());
@@ -287,7 +306,8 @@ public class MockProviderServer implements AutoCloseable {
     private String netlifySiteJson(Map<String, Object> s) {
         return "{\"id\":\"" + s.get("id") + "\",\"name\":\"" + s.get("name") + "\",\"ssl_url\":\"" + s.get("ssl_url")
             + "\",\"account_id\":\"" + s.get("account_id") + "\",\"build_settings\":{\"repo_path\":\""
-            + str(s.get("repo_path")) + "\"}}";
+            + str(s.get("repo_path")) + "\",\"public_repo\":" + Boolean.TRUE.equals(s.get("public_repo"))
+            + ",\"deploy_key_id\":\"" + str(s.get("deploy_key_id")) + "\"}}";
     }
 
     private boolean validNetlifyRepoPayload(String body) {

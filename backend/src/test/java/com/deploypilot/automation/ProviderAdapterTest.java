@@ -149,6 +149,7 @@ class ProviderAdapterTest {
         assertFalse(create.body().contains("\"repo\":\"demo/sample-monorepo\""));
         assertFalse(create.body().contains("\"branch\":\"main\""));
 
+        mock.markNetlifyRepoBindingStale(site.id());
         netlify.configureSite(nf, site.id(), request);
         netlify.setEnvVars(nf, site.id(), List.of(new EnvVarInput("VITE_API_URL", "https://api.example", false)));
         netlify.setEnvVars(nf, site.id(), List.of(new EnvVarInput("VITE_API_URL", "https://api-v2.example", false)));
@@ -157,6 +158,11 @@ class ProviderAdapterTest {
             "new environment variables use Netlify's account environment endpoint");
         assertEquals(1, mock.countExact("PUT", "/nf/accounts/nf-acct-1/env/VITE_API_URL"),
             "existing environment variables are updated idempotently");
+        assertEquals(1, mock.countExact("PUT", "/nf/sites/" + site.id() + "/unlink_repo"),
+            "a stale deploy key is cleared before relinking the same public site");
+        assertTrue(mock.requests().stream()
+            .filter(r -> r.method().equals("PUT") && r.path().contains("/unlink_repo"))
+            .allMatch(r -> r.body().isBlank()), "Netlify's unlink action has no request body");
         assertTrue(mock.to("/nf/sites/" + site.id()).stream()
             .filter(r -> r.method().equals("PATCH"))
             .allMatch(r -> !r.body().contains("build_settings") && !r.body().contains("\"env\"")),

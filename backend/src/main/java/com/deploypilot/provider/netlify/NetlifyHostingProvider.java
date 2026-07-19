@@ -96,13 +96,33 @@ public class NetlifyHostingProvider implements HostingProvider {
 
     @Override
     public HostingSite configureSite(ProviderCredential credential, String siteId, CreateSiteRequest request) {
+        ApiResult current = http.get(baseUrl + "/sites/" + enc(siteId), credential);
+        requireSiteSuccess(current, siteId, "read");
+
+        JsonNode currentRepo = current.body().path("build_settings");
+        boolean stalePublicBinding = request.publicRepository()
+            && (!currentRepo.path("public_repo").asBoolean(false)
+                || !currentRepo.path("deploy_key_id").asText("").isBlank());
+        if (stalePublicBinding) {
+            // Netlify can retain a deploy key from a previous/invalid repository
+            // link and rewrite an HTTPS clone through SSH, causing "Host key
+            // verification failed" even for a public GitHub repository. The
+            // official unlink operation removes that deploy key and its hooks;
+            // the PATCH below immediately relinks the same site as public.
+            ApiResult unlinked = http.put(baseUrl + "/sites/" + enc(siteId) + "/unlink_repo", credential);
+            requireSiteSuccess(unlinked, siteId, "clear stale repository credentials from");
+        }
+
         ApiResult r = http.patch(baseUrl + "/sites/" + enc(siteId),
             Map.of("repo", repoInfo(request)), credential);
-        if (r.isUnauthorized()) throw new ProviderException.BadCredentials("Netlify rejected the token.");
-        if (r.isNotFound()) throw new ProviderException.NotFound("Netlify site not found: " + siteId);
-        if (!r.isSuccess()) {
-            throw new ProviderException.UnexpectedResult(
-                "Could not update the Netlify repository settings (status " + r.status() + ").");
+        requireSiteSuccess(r, siteId, "update repository settings for");
+        if (request.publicRepository()) {
+            JsonNode configured = r.body().path("build_settings");
+            if (!configured.path("public_repo").asBoolean(false)
+                || !configured.path("deploy_key_id").asText("").isBlank()) {
+                throw new ProviderException.UnexpectedResult(
+                    "Netlify did not relink the site as a public repository. Retry after the site configuration refreshes.");
+            }
         }
         return toSite(r.body());
     }
@@ -232,6 +252,15 @@ public class NetlifyHostingProvider implements HostingProvider {
             String suffix = key == null ? "" : " " + key;
             throw new ProviderException.UnexpectedResult(
                 "Could not " + operation + " Netlify environment variable" + suffix + " (status " + r.status() + ").");
+        }
+    }
+
+    private void requireSiteSuccess(ApiResult r, String siteId, String operation) {
+        if (r.isUnauthorized()) throw new ProviderException.BadCredentials("Netlify rejected the token.");
+        if (r.isNotFound()) throw new ProviderException.NotFound("Netlify site not found: " + siteId);
+        if (!r.isSuccess()) {
+            throw new ProviderException.UnexpectedResult(
+                "Could not " + operation + " the Netlify site (status " + r.status() + ").");
         }
     }
 
