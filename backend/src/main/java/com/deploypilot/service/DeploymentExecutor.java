@@ -233,12 +233,12 @@ public class DeploymentExecutor {
             case "backend.ensure" -> handleEnsure(action, plan, bp, "BACKEND", outputs, creds, userId);
             case "backend.env", "backend.cors", "backend.database-env" -> handleEnv(action, ProviderType.RENDER, OUT_BACKEND_SERVICE_ID,
                 envIndex, outputs, creds, projectId, userId);
-            case "backend.deploy" -> handleDeploy(plan, ProviderType.RENDER, OUT_BACKEND_SERVICE_ID,
+            case "backend.deploy" -> handleDeploy(plan, bp, ProviderType.RENDER, OUT_BACKEND_SERVICE_ID,
                 OUT_BACKEND_DEPLOY_ID, OUT_BACKEND_URL, outputs, creds, userId);
             case "backend.restart" -> handleRestart(ProviderType.RENDER, OUT_BACKEND_SERVICE_ID, outputs, creds, userId);
             case "frontend.ensure" -> handleEnsure(action, plan, bp, "FRONTEND", outputs, creds, userId);
             case "frontend.env" -> handleFrontendEnv(action, plan, bp, envIndex, outputs, creds, projectId, userId);
-            case "frontend.deploy" -> handleDeploy(plan, ProviderType.NETLIFY, OUT_FRONTEND_SITE_ID,
+            case "frontend.deploy" -> handleDeploy(plan, bp, ProviderType.NETLIFY, OUT_FRONTEND_SITE_ID,
                 OUT_FRONTEND_DEPLOY_ID, OUT_FRONTEND_URL, outputs, creds, userId);
             case "verify" -> handleVerify(plan, outputs, projectId);
             default -> new StepResult(ActionStatus.SKIPPED, "No action for " + action.getId(), null);
@@ -444,9 +444,16 @@ public class DeploymentExecutor {
         return new StepResult(ActionStatus.SUCCEEDED, detail, null);
     }
 
-    private StepResult handleDeploy(DeploymentActionPlan plan, ProviderType provider, String idKey,
+    private StepResult handleDeploy(DeploymentActionPlan plan, BlueprintResult bp, ProviderType provider, String idKey,
                                     String deployKey, String urlKey, Map<String, String> outputs,
                                     Map<ProviderType, ProviderCredential> creds, Long userId) {
+        return handleDeploy(plan, bp, provider, idKey, deployKey, urlKey, outputs, creds, userId, true);
+    }
+
+    private StepResult handleDeploy(DeploymentActionPlan plan, BlueprintResult bp, ProviderType provider, String idKey,
+                                    String deployKey, String urlKey, Map<String, String> outputs,
+                                    Map<ProviderType, ProviderCredential> creds, Long userId,
+                                    boolean allowRepositoryRepair) {
         String siteId = outputs.get(idKey);
         if (siteId == null) {
             return new StepResult(ActionStatus.FAILED, "The target resource was not created; cannot deploy.", null);
@@ -454,7 +461,7 @@ public class DeploymentExecutor {
         HostingProvider hosting = providers.hosting(provider);
         ProviderCredential cred = cred(creds, provider, userId);
         DeploymentStatus status = hosting.triggerDeploy(cred, siteId,
-            new DeployRequest(plan.getBranch(), plan.getCommitSha(), false));
+            new DeployRequest(plan.getBranch(), plan.getCommitSha(), !allowRepositoryRepair));
         String deployId = status.deploymentId();
         if (deployId != null) outputs.put(deployKey, deployId);
 
@@ -477,11 +484,34 @@ public class DeploymentExecutor {
         }
         if (state == DeploymentState.FAILED || state == DeploymentState.CANCELED) {
             String logs = deployId != null ? hosting.getSanitizedLogs(cred, siteId, deployId) : null;
+            if (allowRepositoryRepair && provider == ProviderType.NETLIFY
+                && isRepositoryCloneFailure(logs)) {
+                BlueprintResult.Component frontend = component(bp, "FRONTEND");
+                hosting.repairRepositoryBinding(cred, siteId,
+                    siteRequest(plan, bp, frontend, "FRONTEND", creds, userId));
+                StepResult retried = handleDeploy(plan, bp, provider, idKey, deployKey, urlKey,
+                    outputs, creds, userId, false);
+                if (retried.status() == ActionStatus.SUCCEEDED) {
+                    return new StepResult(ActionStatus.SUCCEEDED,
+                        "Cleared a stale Netlify repository credential, relinked the public GitHub HTTPS repository, "
+                            + "and retried once. " + retried.detail(), retried.log(), retried.extraOutputs());
+                }
+                return retried;
+            }
             return new StepResult(ActionStatus.FAILED, "Deployment " + state.name().toLowerCase()
                 + ". Fix the issue and retry from this step.", logs);
         }
         return new StepResult(ActionStatus.FAILED,
             "Deployment did not reach a live state in time. Check the provider and retry.", null);
+    }
+
+    static boolean isRepositoryCloneFailure(String logs) {
+        if (logs == null || logs.isBlank()) return false;
+        String evidence = logs.toLowerCase(Locale.ROOT);
+        return evidence.contains("host key verification failed")
+            || evidence.contains("could not read from remote repository")
+            || evidence.contains("failed to prepare repo")
+            || evidence.contains("unable to access repository");
     }
 
     private StepResult handleRestart(ProviderType provider, String idKey, Map<String, String> outputs,

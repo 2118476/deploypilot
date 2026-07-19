@@ -328,6 +328,24 @@ class ProviderAdapterTest {
     }
 
     @Test
+    void netlifyExplicitRepairUnlinksWhenCloneFailureProvesHiddenBindingIsStale() {
+        HostingSite site = createFrontend();
+        mock.markNetlifyRepoLinkedViaGithubApp(site.id());
+        mock.clearRequests();
+
+        HostingSite repaired = netlify.repairRepositoryBinding(nf, site.id(),
+            publicRequest("demo/sample-monorepo", "main"));
+
+        assertEquals("demo/sample-monorepo", repaired.linkedRepo());
+        assertEquals(1, unlinkCount(site.id()),
+            "positive deploy-log evidence must force one unlink even when optional metadata is absent");
+        assertTrue(mock.to("/nf/sites/" + site.id()).stream()
+            .filter(r -> r.method().equals("PATCH"))
+            .anyMatch(r -> r.body().contains(
+                "\"repo_url\":\"https://github.com/demo/sample-monorepo.git\"")));
+    }
+
+    @Test
     void netlifyPreservesPrivateRepositoryBinding() {
         HostingSite site = netlify.createSite(nf, new CreateSiteRequest("priv-frontend", "acme/private-app", "main",
             "frontend", "npm run build", "dist", null, null, null, false)); // private

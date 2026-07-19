@@ -42,6 +42,18 @@ public interface HostingProvider {
         return getSite(credential, siteId);
     }
 
+    /**
+     * Clears and recreates a repository binding after a deployment supplies positive
+     * evidence that the provider cannot clone it. Callers must not use this as a
+     * routine configuration operation: unlinking can remove provider-managed deploy
+     * keys and hooks. Providers without a separate repair operation may reapply their
+     * normal configuration.
+     */
+    default HostingSite repairRepositoryBinding(ProviderCredential credential, String siteId,
+                                                CreateSiteRequest request) {
+        return configureSite(credential, siteId, request);
+    }
+
     /** Sets/updates environment variables on the site/service. Values are not logged. */
     void setEnvVars(ProviderCredential credential, String siteId, List<EnvVarInput> vars);
 
