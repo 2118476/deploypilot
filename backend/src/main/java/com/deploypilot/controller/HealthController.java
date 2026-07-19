@@ -18,6 +18,11 @@ public class HealthController {
         HealthResponse h = new HealthResponse();
         h.setStatus("UP");
         h.setVersion("1.0.0");
+        // Render injects RENDER_GIT_COMMIT at build and runtime. Exposing the short
+        // commit makes the running version provable, so a stalled deploy is visible.
+        String commit = System.getenv("RENDER_GIT_COMMIT");
+        h.setCommit(commit == null || commit.isBlank()
+            ? "unknown" : commit.substring(0, Math.min(7, commit.length())));
         h.setTimestamp(Instant.now());
         return ResponseEntity.ok(ApiResponse.ok(h));
     }
