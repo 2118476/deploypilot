@@ -237,8 +237,7 @@ public class DeploymentExecutor {
                 OUT_BACKEND_DEPLOY_ID, OUT_BACKEND_URL, outputs, creds, userId);
             case "backend.restart" -> handleRestart(ProviderType.RENDER, OUT_BACKEND_SERVICE_ID, outputs, creds, userId);
             case "frontend.ensure" -> handleEnsure(action, plan, bp, "FRONTEND", outputs, creds, userId);
-            case "frontend.env" -> handleEnv(action, ProviderType.NETLIFY, OUT_FRONTEND_SITE_ID,
-                envIndex, outputs, creds, projectId, userId);
+            case "frontend.env" -> handleFrontendEnv(action, plan, bp, envIndex, outputs, creds, projectId, userId);
             case "frontend.deploy" -> handleDeploy(plan, ProviderType.NETLIFY, OUT_FRONTEND_SITE_ID,
                 OUT_FRONTEND_DEPLOY_ID, OUT_FRONTEND_URL, outputs, creds, userId);
             case "verify" -> handleVerify(plan, outputs, projectId);
@@ -318,6 +317,9 @@ public class DeploymentExecutor {
         // Explicit reuse of a user-selected existing resource.
         if (action.getTargetResource() != null) {
             HostingSite site = hosting.getSite(cred, action.getTargetResource());
+            if (provider == ProviderType.NETLIFY) {
+                site = hosting.configureSite(cred, site.id(), siteRequest(plan, bp, component, componentType, creds, userId));
+            }
             captureSite(outputs, idKey, site, componentType);
             return new StepResult(ActionStatus.SUCCEEDED, "Reusing existing " + provider + " resource " + site.name() + ".", null);
         }
@@ -326,6 +328,10 @@ public class DeploymentExecutor {
         String repo = bp.getRepository();
         for (HostingSite existing : hosting.listSites(cred)) {
             if (existing.linkedRepo() != null && existing.linkedRepo().equalsIgnoreCase(repo)) {
+                if (provider == ProviderType.NETLIFY) {
+                    existing = hosting.configureSite(cred, existing.id(),
+                        siteRequest(plan, bp, component, componentType, creds, userId));
+                }
                 captureSite(outputs, idKey, existing, componentType);
                 return new StepResult(ActionStatus.SUCCEEDED,
                     "Reused existing " + provider + " resource " + existing.name() + " linked to " + repo
@@ -334,18 +340,63 @@ public class DeploymentExecutor {
         }
 
         String name = siteName(repo, "BACKEND".equals(componentType) ? "backend" : "frontend");
-        CreateSiteRequest req = new CreateSiteRequest(
-            name, repo, plan.getBranch(),
+        CreateSiteRequest req = siteRequest(plan, bp, component, componentType, creds, userId, name);
+        HostingSite site = hosting.createSite(cred, req);
+        captureSite(outputs, idKey, site, componentType);
+        return new StepResult(ActionStatus.SUCCEEDED,
+            "Created " + provider + " resource " + site.name() + " on the free plan.", null);
+    }
+
+    private StepResult handleFrontendEnv(DeploymentActionPlan.PlannedAction action, DeploymentActionPlan plan,
+                                         BlueprintResult bp,
+                                         Map<String, BlueprintResult.EnvVarMapping> envIndex,
+                                         Map<String, String> outputs,
+                                         Map<ProviderType, ProviderCredential> creds,
+                                         Long projectId, Long userId) {
+        String siteId = outputs.get(OUT_FRONTEND_SITE_ID);
+        if (siteId == null) {
+            return new StepResult(ActionStatus.FAILED, "The target resource was not created; cannot set variables.", null);
+        }
+        HostingProvider hosting = providers.hosting(ProviderType.NETLIFY);
+        ProviderCredential credential = cred(creds, ProviderType.NETLIFY, userId);
+        BlueprintResult.Component frontend = component(bp, "FRONTEND");
+
+        // A retry skips the already-successful ensure step. Reapply the corrected
+        // repository payload here so a previously created site is repaired before
+        // its next build, without creating a duplicate site.
+        hosting.configureSite(credential, siteId,
+            siteRequest(plan, bp, frontend, "FRONTEND", creds, userId));
+        return handleEnv(action, ProviderType.NETLIFY, OUT_FRONTEND_SITE_ID,
+            envIndex, outputs, creds, projectId, userId);
+    }
+
+    private CreateSiteRequest siteRequest(DeploymentActionPlan plan, BlueprintResult bp,
+                                          BlueprintResult.Component component, String componentType,
+                                          Map<ProviderType, ProviderCredential> creds, Long userId) {
+        String suffix = "BACKEND".equals(componentType) ? "backend" : "frontend";
+        return siteRequest(plan, bp, component, componentType, creds, userId,
+            siteName(bp.getRepository(), suffix));
+    }
+
+    private CreateSiteRequest siteRequest(DeploymentActionPlan plan, BlueprintResult bp,
+                                          BlueprintResult.Component component, String componentType,
+                                          Map<ProviderType, ProviderCredential> creds, Long userId,
+                                          String name) {
+        boolean publicRepository = false;
+        if ("FRONTEND".equals(componentType)) {
+            RepositorySummary repository = providers.git().getRepository(
+                cred(creds, ProviderType.GITHUB, userId), RepositoryRef.parse(bp.getRepository()));
+            publicRepository = !repository.privateRepo();
+        }
+        return new CreateSiteRequest(
+            name, bp.getRepository(), branchOf(plan),
             component != null ? component.getRootDirectory() : null,
             component != null ? component.getBuildCommand() : null,
             component != null ? component.getPublishDirectory() : null,
             component != null ? component.getStartCommand() : null,
             "BACKEND".equals(componentType) ? renderRuntime(component) : null,
-            component != null ? component.getHealthCheckPath() : null);
-        HostingSite site = hosting.createSite(cred, req);
-        captureSite(outputs, idKey, site, componentType);
-        return new StepResult(ActionStatus.SUCCEEDED,
-            "Created " + provider + " resource " + site.name() + " on the free plan.", null);
+            component != null ? component.getHealthCheckPath() : null,
+            publicRepository);
     }
 
     private StepResult handleEnv(DeploymentActionPlan.PlannedAction action, ProviderType provider, String idKey,

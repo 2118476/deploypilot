@@ -118,9 +118,9 @@ class AutomationFlowTest {
 
         runToCompletion(token, projectId);
 
-        // The Netlify site update must carry the public API URL but no backend secrets.
+        // The Netlify environment endpoint must carry the public API URL but no backend secrets.
         String netlifyEnvBodies = MOCK.requests().stream()
-            .filter(r -> r.method().equals("PATCH") && r.path().contains("/nf/sites/"))
+            .filter(r -> r.path().contains("/nf/accounts/") && r.path().contains("/env"))
             .map(MockProviderServer.Recorded::body)
             .reduce("", (a, b) -> a + "\n" + b);
 
@@ -142,7 +142,7 @@ class AutomationFlowTest {
         // The frontend API URL must be the backend URL + /api, proving the backend
         // was deployed and its URL captured before the frontend variables were set.
         String netlifyEnvBodies = MOCK.requests().stream()
-            .filter(r -> r.method().equals("PATCH") && r.path().contains("/nf/sites/"))
+            .filter(r -> r.path().contains("/nf/accounts/") && r.path().contains("/env"))
             .map(MockProviderServer.Recorded::body).reduce("", (a, b) -> a + b);
         assertTrue(netlifyEnvBodies.contains(MOCK.liveBackendUrl() + "/api"),
             "frontend API URL is derived from the captured backend URL");
@@ -163,6 +163,39 @@ class AutomationFlowTest {
         runToCompletion(token, projectId);
         assertEquals(0, MOCK.countExact("POST", "/rd/services"), "backend service must be reused, not recreated");
         assertEquals(0, MOCK.countExact("POST", "/nf/sites"), "frontend site must be reused, not recreated");
+    }
+
+    @Test
+    void retryRepairsExistingNetlifySiteBeforeResumingFailedEnvironmentStep() throws Exception {
+        String token = register();
+        connectAll(token);
+        long projectId = importRepo(token);
+        saveSecret(token, projectId, "DATABASE_URL", DB_URL_VALUE);
+
+        JsonNode plan = plan(token, projectId);
+        JsonNode confirmation = confirm(token, projectId, plan.path("planHash").asText());
+        long runId = confirmation.path("runId").asLong();
+        MOCK.setNetlifyEnvFailures(1);
+        execute(token, projectId, runId, confirmation.path("nonce").asText());
+        JsonNode failed = pollRun(token, projectId, runId);
+        assertEquals("FAILED", failed.path("status").asText());
+        assertEquals(1, MOCK.countExact("POST", "/nf/sites"), "the site was created before the env failure");
+
+        MOCK.clearRequests(); // preserve the existing site, as a real failed run does
+        JsonNode retryConfirmation = confirm(token, projectId, plan.path("planHash").asText());
+        retry(token, projectId, runId, retryConfirmation.path("nonce").asText());
+        JsonNode retried = pollRun(token, projectId, runId);
+
+        assertEquals("SUCCEEDED", retried.path("status").asText(), () -> "retry failed: "
+            + retried.path("failureReason").asText() + " steps=" + retried.path("steps"));
+        assertEquals(0, MOCK.countExact("POST", "/nf/sites"), "retry must not create a duplicate site");
+        assertTrue(MOCK.requests().stream().anyMatch(r ->
+            r.method().equals("PATCH") && r.path().startsWith("/nf/sites/")
+                && r.body().contains("\"repo_path\":\"demo/sample-monorepo\"")
+                && r.body().contains("\"public_repo\":true")),
+            "retry must repair the existing site's public GitHub repository settings");
+        assertTrue(MOCK.countExact("POST", "/nf/accounts/nf-acct-1/env") > 0,
+            "retry must resume using the current Netlify environment endpoint");
     }
 
     // ==================== confirmation & safety ====================
@@ -355,6 +388,14 @@ class AutomationFlowTest {
 
     private void execute(String token, long projectId, long runId, String nonce) throws Exception {
         mockMvc.perform(post("/projects/" + projectId + "/automation/runs/" + runId + "/execute")
+                .header("Authorization", "Bearer " + token)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"nonce\":\"" + nonce + "\"}"))
+            .andExpect(status().isOk());
+    }
+
+    private void retry(String token, long projectId, long runId, String nonce) throws Exception {
+        mockMvc.perform(post("/projects/" + projectId + "/automation/runs/" + runId + "/retry")
                 .header("Authorization", "Bearer " + token)
                 .contentType(MediaType.APPLICATION_JSON)
                 .content("{\"nonce\":\"" + nonce + "\"}"))

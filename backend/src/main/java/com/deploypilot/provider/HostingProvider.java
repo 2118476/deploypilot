@@ -34,6 +34,14 @@ public interface HostingProvider {
      */
     HostingSite createSite(ProviderCredential credential, CreateSiteRequest request);
 
+    /**
+     * Re-applies repository/build configuration to an existing resource. Providers
+     * that do not require a repair step may keep the existing resource unchanged.
+     */
+    default HostingSite configureSite(ProviderCredential credential, String siteId, CreateSiteRequest request) {
+        return getSite(credential, siteId);
+    }
+
     /** Sets/updates environment variables on the site/service. Values are not logged. */
     void setEnvVars(ProviderCredential credential, String siteId, List<EnvVarInput> vars);
 

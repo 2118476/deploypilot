@@ -303,7 +303,7 @@ class JobPilotCreateNewFlowTest {
             r.method().equals("PUT") && r.path().startsWith("/rd") && r.path().endsWith("/env-vars/" + varName));
     }
 
-    /** Netlify sets variables in the request body (build_settings.env), not the path. */
+    /** Netlify sets variables through the account environment endpoint request body. */
     private boolean netlifyGot(String varName) {
         return MOCK.requests().stream().anyMatch(r ->
             r.path().startsWith("/nf") && r.body() != null && r.body().contains("\"" + varName + "\""));
