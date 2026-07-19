@@ -43,6 +43,12 @@ public class MockProviderServer implements AutoCloseable {
     private volatile boolean gitHubRepoInaccessible = false;   // token cannot see the repo at all
     private volatile boolean gitHubMetadataFailure = false;    // repo metadata 500s; default branch is master
     private volatile int netlifyEnvFailuresRemaining = 0;
+    // Keys that already exist on the account but are NOT returned by the env listing
+    // (e.g. created earlier or under the legacy site-level system). Creating them 400s
+    // "already exists"; updating them succeeds and moves them into the visible env.
+    private final java.util.Set<String> netlifyHiddenEnvKeys = new java.util.concurrent.CopyOnWriteArraySet<>();
+    // Optional custom body returned by the next simulated env failure (for sanitisation tests).
+    private volatile String netlifyEnvErrorBody = null;
     // Supabase simulation switches.
     public static final String SUPABASE_SERVICE_ROLE_MARKER = "service-role-SECRET-key";
     private volatile boolean supabaseBillingRequired = false;
@@ -95,6 +101,10 @@ public class MockProviderServer implements AutoCloseable {
     public void setGitHubRepoInaccessible(boolean v) { this.gitHubRepoInaccessible = v; }
     public void setGitHubMetadataFailure(boolean v) { this.gitHubMetadataFailure = v; }
     public void setNetlifyEnvFailures(int calls) { this.netlifyEnvFailuresRemaining = calls; }
+    /** Body returned by the next simulated env failure (to exercise error sanitisation). */
+    public void setNetlifyEnvErrorBody(String body) { this.netlifyEnvErrorBody = body; }
+    /** Mark a variable as already existing on the account but hidden from the env listing. */
+    public void seedNetlifyHiddenEnvKey(String key) { netlifyHiddenEnvKeys.add(key); }
     public void markNetlifyRepoBindingStale(String siteId) {
         Map<String, Object> site = netlifySites.get(siteId);
         if (site != null) {
@@ -117,6 +127,8 @@ public class MockProviderServer implements AutoCloseable {
         gitHubRepoInaccessible = false;
         gitHubMetadataFailure = false;
         netlifyEnvFailuresRemaining = 0;
+        netlifyHiddenEnvKeys.clear();
+        netlifyEnvErrorBody = null;
         supabaseBillingRequired = false;
         supabaseQueryFail = false;
         supabaseRateLimitRemaining = 0;
@@ -262,15 +274,24 @@ public class MockProviderServer implements AutoCloseable {
             }
             if (netlifyEnvFailuresRemaining > 0) {
                 netlifyEnvFailuresRemaining--;
-                json(ex, 400, "{\"message\":\"simulated Netlify env failure\"}");
+                json(ex, 400, envFailureBody());
                 return;
             }
             Map<String, Object> site = siteFromQuery(ex);
             if (site == null) { json(ex, 404, "{}"); return; }
             @SuppressWarnings("unchecked")
             Map<String, Object> env = (Map<String, Object>) site.get("env");
+            java.util.List<String> bodyKeys = new ArrayList<>();
             java.util.regex.Matcher keys = java.util.regex.Pattern.compile("\"key\"\\s*:\\s*\"([^\"]+)\"").matcher(body);
-            while (keys.find()) env.put(keys.group(1), true);
+            while (keys.find()) bodyKeys.add(keys.group(1));
+            // Netlify rejects the create when a key already exists (even one hidden from the listing).
+            for (String k : bodyKeys) {
+                if (netlifyHiddenEnvKeys.contains(k)) {
+                    json(ex, 400, "{\"message\":\"A variable with key " + k + " already exists\"}");
+                    return;
+                }
+            }
+            for (String k : bodyKeys) env.put(k, true);
             json(ex, 201, body);
         } else if (p.matches("/accounts/nf-acct-1/env/[^/]+") && method.equals("PUT")) {
             if (!validNetlifyEnvPayload(body)) {
@@ -279,7 +300,7 @@ public class MockProviderServer implements AutoCloseable {
             }
             if (netlifyEnvFailuresRemaining > 0) {
                 netlifyEnvFailuresRemaining--;
-                json(ex, 400, "{\"message\":\"simulated Netlify env failure\"}");
+                json(ex, 400, envFailureBody());
                 return;
             }
             Map<String, Object> site = siteFromQuery(ex);
@@ -287,6 +308,7 @@ public class MockProviderServer implements AutoCloseable {
             @SuppressWarnings("unchecked")
             Map<String, Object> env = (Map<String, Object>) site.get("env");
             String key = p.substring("/accounts/nf-acct-1/env/".length());
+            netlifyHiddenEnvKeys.remove(key); // updating a hidden variable makes it visible
             env.put(key, true);
             json(ex, 200, body);
         } else if (p.matches("/sites/[^/]+/builds") && method.equals("POST")) {
@@ -333,6 +355,10 @@ public class MockProviderServer implements AutoCloseable {
                 + "\"runtime\"\\s*,\\s*\"post-processing\"\\s*\\]")
             .matcher(body).results().count();
         return keys > 0 && keys == freePlanScopes;
+    }
+
+    private String envFailureBody() {
+        return netlifyEnvErrorBody != null ? netlifyEnvErrorBody : "{\"message\":\"simulated Netlify env failure\"}";
     }
 
     private Map<String, Object> siteFromQuery(HttpExchange ex) {

@@ -16,9 +16,11 @@ import org.springframework.web.util.UriUtils;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Netlify adapter (frontend hosting). Creates sites on the free plan, sets build
@@ -134,9 +136,35 @@ public class NetlifyHostingProvider implements HostingProvider {
         return toSite(r.body());
     }
 
+    /**
+     * Create or update frontend build variables on Netlify, idempotently.
+     *
+     * <p>Uses the current account environment endpoint
+     * {@code POST /api/v1/accounts/{account_id}/env?site_id={site_id}} for new
+     * variables and {@code PUT .../env/{key}?site_id=...} for existing ones. The
+     * two calls are reconciled with the account listing, and each result is treated
+     * as data so a reused site never fails just because a variable already exists:
+     * a create-conflict falls back to an update, and an update on a missing key
+     * falls back to a create.
+     *
+     * <p>Every value is validated before any network call so a genuinely missing
+     * value fails with a clear, variable-specific message instead of an opaque 400.
+     * Netlify's response body is captured (sanitised) so 400s are diagnosable, but
+     * variable values, tokens and secrets are never logged or surfaced.
+     */
     @Override
     public void setEnvVars(ProviderCredential credential, String siteId, List<EnvVarInput> vars) {
-        if (vars.isEmpty()) return;
+        if (vars == null || vars.isEmpty()) return;
+
+        // Validate up front: never send a null/blank value to Netlify (it is rejected
+        // with a generic 400). Fail with the offending variable named instead.
+        for (EnvVarInput v : vars) {
+            if (v.value() == null || v.value().isBlank()) {
+                throw new ProviderException.UnexpectedResult(
+                    "Cannot set Netlify environment variable " + v.key()
+                        + ": no value is available. Provide a value or remove it from the plan.");
+            }
+        }
 
         ApiResult site = http.get(baseUrl + "/sites/" + enc(siteId), credential);
         if (site.isUnauthorized()) throw new ProviderException.BadCredentials("Netlify rejected the token.");
@@ -150,35 +178,75 @@ public class NetlifyHostingProvider implements HostingProvider {
             throw new ProviderException.UnexpectedResult("Could not determine the Netlify account for the site.");
         }
 
-        String envUrl = baseUrl + "/accounts/" + enc(accountId) + "/env?site_id=" + query(siteId);
-        ApiResult current = http.get(envUrl, credential);
+        Set<String> existing = existingEnvKeys(credential, accountId, siteId, vars);
+
+        List<Map<String, Object>> toCreate = new ArrayList<>();
+        for (EnvVarInput v : vars) {
+            if (existing.contains(v.key())) {
+                updateEnvVar(credential, accountId, siteId, v);
+            } else {
+                toCreate.add(envVar(v));
+            }
+        }
+        if (!toCreate.isEmpty()) {
+            createEnvVars(credential, accountId, siteId, toCreate, vars);
+        }
+    }
+
+    private Set<String> existingEnvKeys(ProviderCredential credential, String accountId, String siteId,
+                                        List<EnvVarInput> vars) {
+        ApiResult current = http.get(envUrl(accountId, siteId), credential);
         if (current.isUnauthorized()) throw new ProviderException.BadCredentials("Netlify rejected the token.");
         if (!current.isSuccess() || !current.body().isArray()) {
             throw new ProviderException.UnexpectedResult(
-                "Could not read Netlify environment variables (status " + current.status() + ").");
+                "Could not read Netlify environment variables (status " + current.status() + ")."
+                    + responseDetail(current, vars));
         }
-
-        Map<String, Boolean> existing = new LinkedHashMap<>();
+        Set<String> keys = new LinkedHashSet<>();
         for (JsonNode node : current.body()) {
             String key = node.path("key").asText(null);
-            if (key != null) existing.put(key, true);
+            if (key != null && !key.isBlank()) keys.add(key);
         }
+        return keys;
+    }
 
-        List<Map<String, Object>> create = new ArrayList<>();
-        for (EnvVarInput v : vars) {
-            Map<String, Object> value = envVar(v);
-            if (existing.containsKey(v.key())) {
-                ApiResult updated = http.put(baseUrl + "/accounts/" + enc(accountId) + "/env/" + enc(v.key())
-                    + "?site_id=" + query(siteId), value, credential);
-                requireEnvSuccess(updated, "update", v.key());
-            } else {
-                create.add(value);
+    private void createEnvVars(ProviderCredential credential, String accountId, String siteId,
+                               List<Map<String, Object>> toCreate, List<EnvVarInput> all) {
+        ApiResult created = http.post(envUrl(accountId, siteId), toCreate, credential);
+        if (created.isSuccess()) return;
+        if (created.isUnauthorized()) throw new ProviderException.BadCredentials("Netlify rejected the token.");
+        // On a reused site, variables can already exist without appearing in the
+        // account listing (e.g. created earlier or under the legacy site-level env
+        // system). Netlify then answers the create with a 400/409 "already exists".
+        // Recover by updating those keys instead of failing the whole deployment.
+        if (isAlreadyExists(created)) {
+            for (Map<String, Object> item : toCreate) {
+                updateEnvVar(credential, accountId, siteId, byKey(all, String.valueOf(item.get("key"))));
             }
+            return;
         }
-        if (!create.isEmpty()) {
-            ApiResult created = http.post(envUrl, create, credential);
-            requireEnvSuccess(created, "create", null);
+        throw new ProviderException.UnexpectedResult(
+            "Could not create Netlify environment variables (status " + created.status() + ")."
+                + responseDetail(created, all));
+    }
+
+    private void updateEnvVar(ProviderCredential credential, String accountId, String siteId, EnvVarInput v) {
+        List<EnvVarInput> one = List.of(v);
+        ApiResult updated = http.put(envUrl(accountId, siteId, v.key()), envVar(v), credential);
+        if (updated.isSuccess()) return;
+        if (updated.isUnauthorized()) throw new ProviderException.BadCredentials("Netlify rejected the token.");
+        // The variable was listed but is gone now (or never really existed): create it.
+        if (updated.isNotFound()) {
+            ApiResult created = http.post(envUrl(accountId, siteId), List.of(envVar(v)), credential);
+            if (created.isSuccess()) return;
+            if (created.isUnauthorized()) throw new ProviderException.BadCredentials("Netlify rejected the token.");
+            throw new ProviderException.UnexpectedResult(
+                "Could not create Netlify environment variable " + v.key()
+                    + " (status " + created.status() + ")." + responseDetail(created, one));
         }
+        throw new ProviderException.UnexpectedResult(
+            "Could not update Netlify environment variable " + v.key()
+                + " (status " + updated.status() + ")." + responseDetail(updated, one));
     }
 
     @Override
@@ -248,19 +316,62 @@ public class NetlifyHostingProvider implements HostingProvider {
     private Map<String, Object> envVar(EnvVarInput v) {
         Map<String, Object> env = new LinkedHashMap<>();
         env.put("key", v.key());
+        // Send every supported scope: this keeps free sites (which cannot select a
+        // granular scope) working while satisfying the account env API schema.
         env.put("scopes", FREE_PLAN_ENV_SCOPES);
+        // One contextual value applied to every deploy context ("all").
         env.put("values", List.of(Map.of("value", v.value(), "context", "all")));
         env.put("is_secret", v.secret());
         return env;
     }
 
-    private void requireEnvSuccess(ApiResult r, String operation, String key) {
-        if (r.isUnauthorized()) throw new ProviderException.BadCredentials("Netlify rejected the token.");
-        if (!r.isSuccess()) {
-            String suffix = key == null ? "" : " " + key;
-            throw new ProviderException.UnexpectedResult(
-                "Could not " + operation + " Netlify environment variable" + suffix + " (status " + r.status() + ").");
+    private String envUrl(String accountId, String siteId) {
+        return baseUrl + "/accounts/" + enc(accountId) + "/env?site_id=" + query(siteId);
+    }
+
+    private String envUrl(String accountId, String siteId, String key) {
+        return baseUrl + "/accounts/" + enc(accountId) + "/env/" + enc(key) + "?site_id=" + query(siteId);
+    }
+
+    private static EnvVarInput byKey(List<EnvVarInput> vars, String key) {
+        return vars.stream().filter(v -> v.key().equals(key)).findFirst()
+            .orElseThrow(() -> new ProviderException.UnexpectedResult(
+                "Netlify referenced an unexpected environment variable: " + key));
+    }
+
+    private boolean isAlreadyExists(ApiResult r) {
+        if (r.status() == 409) return true;
+        if (r.status() != 400) return false;
+        String body = r.rawBody() == null ? "" : r.rawBody().toLowerCase(Locale.ROOT);
+        return body.contains("exist") || body.contains("conflict") || body.contains("duplicate")
+            || body.contains("already");
+    }
+
+    /**
+     * A short, secret-safe fragment of Netlify's response body so a 400 can be
+     * diagnosed. Uses the JSON {@code message}/{@code error} field when present,
+     * strips known token shapes and redacts the values being set, then truncates.
+     * Never includes tokens, authorization headers or environment-variable values.
+     */
+    private String responseDetail(ApiResult r, List<EnvVarInput> vars) {
+        String message = firstNonBlank(r.body().path("message").asText(null),
+            r.body().path("error").asText(null), null);
+        String raw = message != null ? message : r.rawBody();
+        if (raw == null || raw.isBlank()) return "";
+        String safe = redactValues(sanitize(raw), vars).trim();
+        if (safe.isBlank()) return "";
+        if (safe.length() > 200) safe = safe.substring(0, 200) + "…";
+        return " Netlify response: " + safe;
+    }
+
+    private String redactValues(String s, List<EnvVarInput> vars) {
+        String out = s;
+        for (EnvVarInput v : vars) {
+            if (v.value() != null && v.value().length() >= 4) {
+                out = out.replace(v.value(), "[REDACTED]");
+            }
         }
+        return out;
     }
 
     private void requireSiteSuccess(ApiResult r, String siteId, String operation) {
