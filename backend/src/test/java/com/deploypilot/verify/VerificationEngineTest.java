@@ -61,6 +61,23 @@ class VerificationEngineTest {
     }
 
     @Test
+    void ignoresDormantLibraryLocalhostWhenProductionBackendIsPresent() throws Exception {
+        try (MockDeploymentServer fe = new MockDeploymentServer(); MockDeploymentServer be = new MockDeploymentServer()) {
+            fe.route("/", 200, "text/html", "<html><script src=\"/app.js\"></script></html>");
+            fe.route("/app.js", 200, "application/javascript",
+                "const production='" + be.baseUrl() + "';const libraryFallback='http://localhost:9999'");
+            be.route("/", 200, "text/plain", "root");
+            be.route("/api/health", 200, "application/json", "{\"ok\":true}");
+
+            VerificationEngine.Outcome out = engine.verify(
+                ctx(fe.baseUrl(), be.baseUrl(), "/api/health", null, false));
+
+            assertEquals("PASS", check(out.result(), "frontend.bundle").getStatus());
+            assertFalse(hasDiagnosis(out.result(), "localhost"));
+        }
+    }
+
+    @Test
     void detectsUnreplacedPlaceholderInBundle() throws Exception {
         try (MockDeploymentServer fe = new MockDeploymentServer()) {
             fe.route("/", 200, "text/html", "<html><script src=\"/app.js\"></script></html>");

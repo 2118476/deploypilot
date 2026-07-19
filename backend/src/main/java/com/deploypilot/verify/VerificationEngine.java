@@ -179,8 +179,24 @@ public class VerificationEngine {
             return;
         }
         List<String> problems = new ArrayList<>();
-        if (f.bundle.contains("http://localhost") || f.bundle.contains("https://localhost")
-            || f.bundle.matches("(?s).*localhost:\\d{2,5}.*")) {
+        String backendHost = ctx.backendUrl() == null || ctx.backendUrl().isBlank()
+            ? null : hostOf(ctx.backendUrl());
+        if (backendHost != null) {
+            f.bundleReferencesBackend = f.bundle.contains(backendHost);
+        } else {
+            f.bundleReferencesBackend = null;
+        }
+
+        // Third-party browser libraries can contain dormant localhost constants.
+        // Supabase Auth, for example, currently ships a localhost:9999 fallback in
+        // its production bundle. Do not call the deployment broken when the same
+        // bundle demonstrably contains the intended production backend. A localhost
+        // reference remains a blocker when the expected backend is absent (or no
+        // backend was supplied), which preserves detection of real dev configuration.
+        boolean containsLocalhost = f.bundle.contains("http://localhost")
+            || f.bundle.contains("https://localhost")
+            || f.bundle.matches("(?s).*localhost:\\d{2,5}.*");
+        if (containsLocalhost && !Boolean.TRUE.equals(f.bundleReferencesBackend)) {
             f.bundleHasLocalhost = true;
             problems.add("bundle references localhost");
             diagnose(r, "BLOCKER", "CONFIRMED", "CONNECTION", "The production frontend calls localhost",
@@ -199,8 +215,6 @@ public class VerificationEngine {
                 "REBUILD");
         }
         if (ctx.backendUrl() != null && !ctx.backendUrl().isBlank()) {
-            String backendHost = hostOf(ctx.backendUrl());
-            f.bundleReferencesBackend = backendHost != null && f.bundle.contains(backendHost);
             if (Boolean.FALSE.equals(f.bundleReferencesBackend) && !f.bundleHasLocalhost && !f.bundleHasPlaceholder) {
                 problems.add("bundle does not mention the backend host " + backendHost);
                 diagnose(r, "WARNING", "LIKELY", "CONNECTION",
@@ -219,8 +233,6 @@ public class VerificationEngine {
                     "Browsers block mixed content, so these API calls will fail.",
                     "Change the frontend's API base URL to https:// and rebuild.", "REBUILD");
             }
-        } else {
-            f.bundleReferencesBackend = null;
         }
         Matcher stamp = BUILD_STAMP.matcher(f.bundle);
         if (stamp.find()) f.liveCommit = stamp.group(1);
