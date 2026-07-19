@@ -413,15 +413,26 @@ public class DeploymentExecutor {
         List<String> skipped = new ArrayList<>();
         for (String name : action.getEnvironmentVariableNames()) {
             BlueprintResult.EnvVarMapping m = envIndex.get(name);
-            // Hard safety net: a sensitive variable must never be sent to the frontend host.
-            if (provider == ProviderType.NETLIFY && m != null && "SECRET_OR_SENSITIVE".equals(m.getClassification())) {
+            boolean sensitive = m != null && "SECRET_OR_SENSITIVE".equals(m.getClassification());
+            // Hard safety net: a sensitive variable (e.g. a Supabase service-role key)
+            // must never be sent to the frontend host.
+            if (provider == ProviderType.NETLIFY && sensitive) {
                 skipped.add(name + " (sensitive; not sent to frontend)");
                 continue;
             }
             String value = resolveValue(name, m, outputs, projectId, userId);
-            if (value != null) {
-                inputs.add(new EnvVarInput(name, value, m != null && "SECRET_OR_SENSITIVE".equals(m.getClassification())));
+            if (value != null && !value.isBlank()) {
+                inputs.add(new EnvVarInput(name, value, sensitive));
                 set.add(name);
+            } else if (provider == ProviderType.NETLIFY && requiredForDeployment(m)) {
+                // At the frontend step the backend URL and public Supabase values are
+                // already available, so a missing value here means the frontend would
+                // ship broken. Never silently drop VITE_API_URL / VITE_SUPABASE_URL /
+                // VITE_SUPABASE_ANON_KEY: fail with a clear, variable-specific reason
+                // instead of letting Netlify return an opaque 400.
+                return new StepResult(ActionStatus.FAILED,
+                    "Cannot set " + name + ": no value was available at this step. Make sure the step it "
+                        + "depends on has completed, then retry from here.", null);
             } else {
                 skipped.add(name + " (no value available)");
             }
@@ -543,6 +554,22 @@ public class DeploymentExecutor {
         String known = ActionPlanService.KNOWN_CONFIG_DEFAULTS.get(name.toUpperCase(Locale.ROOT));
         if (known != null) return known;
         return null;
+    }
+
+    /**
+     * Whether a missing value for this variable should fail the step (rather than be
+     * skipped). True for variables the deployment is responsible for providing: those
+     * marked required, wired to a produced output (e.g. the backend URL), or public
+     * frontend credentials/URLs DeployPilot provisions itself (Supabase). These must
+     * never be silently dropped, or the frontend ships broken.
+     */
+    private boolean requiredForDeployment(BlueprintResult.EnvVarMapping m) {
+        if (m == null) return false;
+        if (Boolean.TRUE.equals(m.getRequired())) return true;
+        if (m.getDependsOnOutput() != null) return true;
+        if ("PUBLIC_PUBLISHABLE_CREDENTIAL".equals(m.getClassification())) return true;
+        String n = m.getName() == null ? "" : m.getName().toUpperCase(Locale.ROOT);
+        return n.contains("SUPABASE_URL") || n.contains("SUPABASE_ANON");
     }
 
     private boolean isCorsVar(BlueprintResult.EnvVarMapping m) {

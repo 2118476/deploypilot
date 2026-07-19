@@ -173,4 +173,100 @@ class ProviderAdapterTest {
             .allMatch(r -> !r.body().contains("build_settings") && !r.body().contains("\"env\"")),
             "site updates must never use the removed build_settings.env contract");
     }
+
+    @Test
+    void netlifyCreatesVariablesWithCurrentPayloadStructure() {
+        HostingSite site = createFrontend();
+        mock.clearRequests();
+        netlify.setEnvVars(nf, site.id(), List.of(
+            new EnvVarInput("VITE_API_URL", "https://jobpilot-backend-qg2w.onrender.com", false),
+            new EnvVarInput("VITE_SUPABASE_URL", "https://proj.supabase.co", false),
+            new EnvVarInput("VITE_SUPABASE_ANON_KEY", "anon-public-key", false)));
+
+        // Reads the site to resolve the account id, then creates via the account env endpoint.
+        MockProviderServer.Recorded create = mock.requests().stream()
+            .filter(r -> r.method().equals("POST") && r.path().startsWith("/nf/accounts/nf-acct-1/env"))
+            .findFirst().orElseThrow();
+        assertTrue(create.path().contains("site_id=" + site.id()), "create must pass site_id as a query parameter");
+        String b = create.body();
+        assertTrue(b.contains("\"key\":\"VITE_API_URL\""));
+        assertTrue(b.contains("\"key\":\"VITE_SUPABASE_URL\""));
+        assertTrue(b.contains("\"key\":\"VITE_SUPABASE_ANON_KEY\""));
+        assertTrue(b.contains("\"context\":\"all\""), "each value applies to all deploy contexts");
+        assertTrue(b.contains("\"is_secret\":false"), "public frontend variables are not secret");
+        // Every supported scope is sent so free sites (which cannot select granular scopes) keep working.
+        assertTrue(b.contains("\"scopes\":[\"builds\",\"functions\",\"runtime\",\"post-processing\"]"),
+            "free-plan variables include every Netlify scope");
+    }
+
+    @Test
+    void netlifyUpdatesExistingVariableInPlaceIdempotently() {
+        HostingSite site = createFrontend();
+        netlify.setEnvVars(nf, site.id(), List.of(new EnvVarInput("VITE_SUPABASE_URL", "https://a.supabase.co", false)));
+        mock.clearRequests();
+        // Second run with a new value: the variable now exists, so it is updated, not recreated.
+        netlify.setEnvVars(nf, site.id(), List.of(new EnvVarInput("VITE_SUPABASE_URL", "https://b.supabase.co", false)));
+
+        assertEquals(0, mock.countExact("POST", "/nf/accounts/nf-acct-1/env"), "no duplicate create");
+        assertEquals(1, mock.countExact("PUT", "/nf/accounts/nf-acct-1/env/VITE_SUPABASE_URL"),
+            "existing variable is updated in place");
+    }
+
+    @Test
+    void netlifyRecoversWhenAReusedSiteAlreadyHasTheVariable() {
+        HostingSite site = createFrontend();
+        // The variable already exists on the reused site but is not returned by the
+        // listing (legacy/site-level). Creating it 400s "already exists".
+        mock.seedNetlifyHiddenEnvKey("VITE_API_URL");
+        mock.clearRequests();
+
+        assertDoesNotThrow(() -> netlify.setEnvVars(nf, site.id(),
+            List.of(new EnvVarInput("VITE_API_URL", "https://api.example", false))),
+            "a pre-existing variable on a reused site must not fail the deploy");
+
+        assertEquals(1, mock.countExact("POST", "/nf/accounts/nf-acct-1/env"), "one create attempt");
+        assertEquals(1, mock.countExact("PUT", "/nf/accounts/nf-acct-1/env/VITE_API_URL"),
+            "create-conflict falls back to an idempotent update");
+    }
+
+    @Test
+    void netlifyFailsWithVariableNameWhenValueIsMissing() {
+        HostingSite site = createFrontend();
+        mock.clearRequests();
+
+        // Blank value.
+        Exception blank = assertThrows(RuntimeException.class, () -> netlify.setEnvVars(nf, site.id(),
+            List.of(new EnvVarInput("VITE_SUPABASE_ANON_KEY", "   ", false))));
+        assertTrue(blank.getMessage().contains("VITE_SUPABASE_ANON_KEY"), "error names the variable");
+        // Null value.
+        Exception missing = assertThrows(RuntimeException.class, () -> netlify.setEnvVars(nf, site.id(),
+            List.of(new EnvVarInput("VITE_API_URL", null, false))));
+        assertTrue(missing.getMessage().contains("VITE_API_URL"), "error names the variable");
+
+        // Validation happens before any Netlify call — nothing was sent.
+        assertEquals(0, mock.count("GET", "/nf/accounts/nf-acct-1/env"));
+        assertEquals(0, mock.count("POST", "/nf/accounts/nf-acct-1/env"));
+    }
+
+    @Test
+    void netlifyEnvErrorsAreSanitisedAndNeverLeakSecrets() {
+        HostingSite site = createFrontend();
+        String anon = "eyJhbGciOiJIUzI1Niop-super-secret-anon";
+        // Netlify's failure body echoes a token and the value we sent — neither may surface.
+        mock.setNetlifyEnvFailures(1);
+        mock.setNetlifyEnvErrorBody("{\"message\":\"invalid token nfp_abcdefghij1234567890zzzz value " + anon + "\"}");
+        mock.clearRequests();
+
+        Exception ex = assertThrows(RuntimeException.class, () -> netlify.setEnvVars(nf, site.id(),
+            List.of(new EnvVarInput("VITE_SUPABASE_ANON_KEY", anon, false))));
+
+        assertTrue(ex.getMessage().contains("status 400"), "surfaces the status for triage");
+        assertFalse(ex.getMessage().contains(anon), "the environment-variable value must never be echoed");
+        assertFalse(ex.getMessage().contains("nfp_abcdefghij1234567890zzzz"), "provider tokens must be redacted");
+    }
+
+    private HostingSite createFrontend() {
+        return netlify.createSite(nf, new CreateSiteRequest("myapp-frontend", "demo/sample-monorepo", "main",
+            "frontend", "npm run build", "dist", null, null, null, true));
+    }
 }
