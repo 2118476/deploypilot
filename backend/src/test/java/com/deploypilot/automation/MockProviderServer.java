@@ -256,6 +256,10 @@ public class MockProviderServer implements AutoCloseable {
             }
             json(ex, 200, out.append(']').toString());
         } else if (p.equals("/accounts/nf-acct-1/env") && method.equals("POST")) {
+            if (!validNetlifyEnvPayload(body)) {
+                json(ex, 400, "{\"message\":\"environment variable scopes are required\"}");
+                return;
+            }
             if (netlifyEnvFailuresRemaining > 0) {
                 netlifyEnvFailuresRemaining--;
                 json(ex, 400, "{\"message\":\"simulated Netlify env failure\"}");
@@ -269,6 +273,10 @@ public class MockProviderServer implements AutoCloseable {
             while (keys.find()) env.put(keys.group(1), true);
             json(ex, 201, body);
         } else if (p.matches("/accounts/nf-acct-1/env/[^/]+") && method.equals("PUT")) {
+            if (!validNetlifyEnvPayload(body)) {
+                json(ex, 400, "{\"message\":\"environment variable scopes are required\"}");
+                return;
+            }
             if (netlifyEnvFailuresRemaining > 0) {
                 netlifyEnvFailuresRemaining--;
                 json(ex, 400, "{\"message\":\"simulated Netlify env failure\"}");
@@ -316,6 +324,15 @@ public class MockProviderServer implements AutoCloseable {
             && body.contains("\"repo_url\"")
             && !body.matches("(?s).*\"repo\"\\s*:\\s*\".*")
             && !body.matches("(?s).*\"branch\"\\s*:\\s*\".*");
+    }
+
+    private boolean validNetlifyEnvPayload(String body) {
+        long keys = java.util.regex.Pattern.compile("\"key\"\\s*:").matcher(body).results().count();
+        long freePlanScopes = java.util.regex.Pattern.compile(
+            "\"scopes\"\\s*:\\s*\\[\\s*\"builds\"\\s*,\\s*\"functions\"\\s*,\\s*"
+                + "\"runtime\"\\s*,\\s*\"post-processing\"\\s*\\]")
+            .matcher(body).results().count();
+        return keys > 0 && keys == freePlanScopes;
     }
 
     private Map<String, Object> siteFromQuery(HttpExchange ex) {

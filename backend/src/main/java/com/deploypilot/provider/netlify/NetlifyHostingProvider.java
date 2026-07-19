@@ -29,6 +29,13 @@ import java.util.Map;
 public class NetlifyHostingProvider implements HostingProvider {
 
     private static final int MAX_SITES = 100;
+    /**
+     * Netlify free accounts cannot select a granular environment-variable scope.
+     * Sending every supported scope preserves the free-plan behaviour while also
+     * satisfying the current account environment API schema.
+     */
+    private static final List<String> FREE_PLAN_ENV_SCOPES =
+        List.of("builds", "functions", "runtime", "post-processing");
 
     private final ProviderApiClient http;
     private final String baseUrl;
@@ -241,6 +248,7 @@ public class NetlifyHostingProvider implements HostingProvider {
     private Map<String, Object> envVar(EnvVarInput v) {
         Map<String, Object> env = new LinkedHashMap<>();
         env.put("key", v.key());
+        env.put("scopes", FREE_PLAN_ENV_SCOPES);
         env.put("values", List.of(Map.of("value", v.value(), "context", "all")));
         env.put("is_secret", v.secret());
         return env;
