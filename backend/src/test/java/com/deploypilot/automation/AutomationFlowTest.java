@@ -169,7 +169,7 @@ class AutomationFlowTest {
     }
 
     @Test
-    void retryRepairsExistingNetlifySiteBeforeResumingFailedEnvironmentStep() throws Exception {
+    void retryReusesExistingNetlifySiteWithoutReconfiguringItsRepository() throws Exception {
         String token = register();
         connectAll(token);
         long projectId = importRepo(token);
@@ -183,6 +183,7 @@ class AutomationFlowTest {
         JsonNode failed = pollRun(token, projectId, runId);
         assertEquals("FAILED", failed.path("status").asText());
         assertEquals(1, MOCK.countExact("POST", "/nf/sites"), "the site was created before the env failure");
+        String siteId = "nf-site-1"; // the mock names the first Netlify site deterministically
 
         MOCK.clearRequests(); // preserve the existing site, as a real failed run does
         JsonNode retryConfirmation = confirm(token, projectId, plan.path("planHash").asText());
@@ -192,11 +193,11 @@ class AutomationFlowTest {
         assertEquals("SUCCEEDED", retried.path("status").asText(), () -> "retry failed: "
             + retried.path("failureReason").asText() + " steps=" + retried.path("steps"));
         assertEquals(0, MOCK.countExact("POST", "/nf/sites"), "retry must not create a duplicate site");
-        assertTrue(MOCK.requests().stream().anyMatch(r ->
-            r.method().equals("PATCH") && r.path().startsWith("/nf/sites/")
-                && r.body().contains("\"repo_path\":\"demo/sample-monorepo\"")
-                && r.body().contains("\"public_repo\":true")),
-            "retry must repair the existing site's public GitHub repository settings");
+        // The reused site is already linked to the correct repository, so retry must NOT
+        // re-apply the repository via the API (which would replace a working GitHub App
+        // HTTPS connection with a deploy-key/SSH one) and must NOT unlink it.
+        assertEquals(0, MOCK.count("PATCH", "/nf/sites/" + siteId), "retry must not re-configure the linked repository");
+        assertEquals(0, MOCK.countExact("PUT", "/nf/sites/" + siteId + "/unlink_repo"), "retry must never unlink the site");
         assertTrue(MOCK.countExact("POST", "/nf/accounts/nf-acct-1/env") > 0,
             "retry must resume using the current Netlify environment endpoint");
     }

@@ -106,27 +106,30 @@ public class NetlifyHostingProvider implements HostingProvider {
         requireSiteSuccess(current, siteId, "read");
         JsonNode buildSettings = current.body().path("build_settings");
 
-        // Only unlink on positive evidence that the existing binding is wrong.
-        // Absent optional fields (public_repo, deploy_key_id) mean "unknown", never
-        // "broken": a valid manual GitHub App connection legitimately omits them, and
-        // unlinking it would destroy a working link. Repair only when Netlify reports
-        // a different repository, an explicitly stale public binding, or a lingering
-        // deploy key (the classic "Host key verification failed" cause).
-        boolean wrongRepository = hasText(buildSettings, "repo_path")
-            && !repoPathMatches(buildSettings, request);
-        boolean explicitlyStalePublicBinding = request.publicRepository()
-            && isExplicitlyFalse(buildSettings, "public_repo");
-        boolean lingeringDeployKey = hasText(buildSettings, "deploy_key_id");
-        boolean wrongPublicRepoUrl = request.publicRepository()
-            && hasText(buildSettings, "repo_url")
-            && !publicRepoUrlMatches(buildSettings, request);
-        boolean needsRepair = wrongRepository || explicitlyStalePublicBinding
-            || lingeringDeployKey || wrongPublicRepoUrl;
-
-        if (needsRepair) {
-            unlinkRepository(credential, siteId);
+        // If the site is already linked to the intended repository, leave the
+        // connection EXACTLY as the user set it up — do not unlink and do not
+        // re-apply the repository through the API.
+        //
+        // Why: re-asserting the repo via `PATCH /sites/{id}` (repo_url/public_repo)
+        // overwrites a working interactive GitHub App connection (which clones over
+        // HTTPS) with an API/deploy-key binding that clones over SSH and then fails
+        // "Host key verification failed" on the very next build. An API call cannot
+        // recreate the GitHub App's interactive authorization, so "repairing" a
+        // correctly-linked site only breaks it. This is regardless of which optional
+        // metadata Netlify includes — a GitHub App connection legitimately omits
+        // public_repo/deploy_key_id, and their absence is never evidence of a fault.
+        if (repoPathMatches(buildSettings, request)) {
+            return toSite(current.body());
         }
 
+        // Linked to a DIFFERENT repository (or none yet). Only here is it safe to
+        // (re)link via the API: there is no working connection to preserve. Clear a
+        // stale different-repo link first, then apply the intended repository. If the
+        // resulting build cannot clone, the deploy step directs the user to connect
+        // the repository through Netlify's GitHub App (which the API cannot do).
+        if (hasText(buildSettings, "repo_path")) {
+            unlinkRepository(credential, siteId);
+        }
         return applyRepositoryConfiguration(credential, siteId, request);
     }
 
@@ -453,15 +456,6 @@ public class NetlifyHostingProvider implements HostingProvider {
         return linked != null && linked.equalsIgnoreCase(request.repoFullName());
     }
 
-    /** Public GitHub repositories must use HTTPS, never a stale SSH/deploy-key URL. */
-    private static boolean publicRepoUrlMatches(JsonNode buildSettings, CreateSiteRequest request) {
-        String linked = text(buildSettings, "repo_url");
-        if (linked == null) return true; // optional field absent: no evidence of a broken link
-        String normalized = linked.trim().replaceAll("/+$", "").toLowerCase(Locale.ROOT);
-        String expected = ("https://github.com/" + request.repoFullName()).toLowerCase(Locale.ROOT);
-        return normalized.equals(expected) || normalized.equals(expected + ".git");
-    }
-
     /** A configured branch is compatible when it matches, or when either side is unspecified. */
     private static boolean branchCompatible(JsonNode buildSettings, CreateSiteRequest request) {
         String linked = text(buildSettings, "repo_branch");
@@ -479,12 +473,6 @@ public class NetlifyHostingProvider implements HostingProvider {
 
     private static boolean hasText(JsonNode node, String field) {
         return text(node, field) != null;
-    }
-
-    /** True only when the field is present AND explicitly the boolean {@code false}. */
-    private static boolean isExplicitlyFalse(JsonNode node, String field) {
-        JsonNode v = node.get(field);
-        return v != null && v.isBoolean() && !v.booleanValue();
     }
 
     /** "present"/"absent" — safe to surface (never a token, secret or value). */
