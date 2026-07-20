@@ -149,6 +149,11 @@ class ProviderAdapterTest {
         assertFalse(create.body().contains("\"repo\":\"demo/sample-monorepo\""));
         assertFalse(create.body().contains("\"branch\":\"main\""));
 
+        // The site is already linked to the intended repository. configureSite must
+        // leave the connection exactly as it is (a manual GitHub App link clones over
+        // HTTPS; re-applying the repo via the API would revert it to a deploy-key/SSH
+        // binding that fails "Host key verification failed"). Even a stale-looking
+        // binding is preserved, never re-configured.
         mock.markNetlifyRepoBindingStale(site.id());
         netlify.configureSite(nf, site.id(), request);
         netlify.setEnvVars(nf, site.id(), List.of(new EnvVarInput("VITE_API_URL", "https://api.example", false)));
@@ -162,15 +167,11 @@ class ProviderAdapterTest {
             .filter(r -> r.method().equals("POST") || r.method().equals("PUT"))
             .noneMatch(r -> r.body().contains("\"scopes\"")),
             "free-plan environment variables must omit paid granular scopes");
-        assertEquals(1, mock.countExact("PUT", "/nf/sites/" + site.id() + "/unlink_repo"),
-            "a stale deploy key is cleared before relinking the same public site");
-        assertTrue(mock.requests().stream()
-            .filter(r -> r.method().equals("PUT") && r.path().contains("/unlink_repo"))
-            .allMatch(r -> r.body().isBlank()), "Netlify's unlink action has no request body");
-        assertTrue(mock.to("/nf/sites/" + site.id()).stream()
-            .filter(r -> r.method().equals("PATCH"))
-            .allMatch(r -> !r.body().contains("build_settings") && !r.body().contains("\"env\"")),
-            "site updates must never use the removed build_settings.env contract");
+        assertEquals(0, mock.countExact("PUT", "/nf/sites/" + site.id() + "/unlink_repo"),
+            "a site already linked to the correct repository is never unlinked");
+        assertEquals(0, mock.to("/nf/sites/" + site.id()).stream()
+            .filter(r -> r.method().equals("PATCH")).count(),
+            "a correctly-linked repository is never re-applied via the API");
     }
 
     @Test
@@ -302,29 +303,35 @@ class ProviderAdapterTest {
     }
 
     @Test
-    void netlifyRepairsExplicitlyStalePublicBinding() {
+    void netlifyPreservesCorrectlyLinkedSiteEvenWhenMetadataLooksStale() {
         HostingSite site = createFrontend();
         mock.markNetlifyRepoBindingStale(site.id()); // public_repo=false + lingering deploy_key_id
         mock.clearRequests();
 
         assertDoesNotThrow(() -> netlify.configureSite(nf, site.id(), publicRequest("demo/sample-monorepo", "main")));
-        assertEquals(1, unlinkCount(site.id()), "a genuinely stale binding is still repaired");
+        // The site is still linked to the correct repo, so DeployPilot must not touch it.
+        // Re-applying the repo via the API cannot recreate interactive GitHub App auth and
+        // would replace a working HTTPS connection with a failing deploy-key/SSH one.
+        assertEquals(0, unlinkCount(site.id()), "a correctly-linked site is never unlinked, even if metadata looks stale");
+        assertEquals(0, mock.to("/nf/sites/" + site.id()).stream()
+            .filter(r -> r.method().equals("PATCH")).count(), "a correctly-linked repository is never re-applied");
     }
 
     @Test
-    void netlifyRepairsSshUrlThatCausesHostKeyFailure() {
+    void netlifyPreservesLinkedSiteWithSshUrlInsteadOfClobbering() {
         HostingSite site = createFrontend();
         mock.markNetlifyRepoUsingSsh(site.id());
         mock.clearRequests();
 
         assertDoesNotThrow(() -> netlify.configureSite(nf, site.id(),
             publicRequest("demo/sample-monorepo", "main")));
-        assertEquals(1, unlinkCount(site.id()), "a public SSH repository URL must be cleared");
-        assertTrue(mock.to("/nf/sites/" + site.id()).stream()
-            .filter(r -> r.method().equals("PATCH"))
-            .anyMatch(r -> r.body().contains(
-                "\"repo_url\":\"https://github.com/demo/sample-monorepo.git\"")),
-            "the repaired public repository must use HTTPS");
+        // An API PATCH cannot turn a deploy-key/SSH clone into a working GitHub App
+        // (HTTPS) clone — only the user's interactive relink can. So DeployPilot leaves
+        // the connection alone (the deploy step then guides the user to relink) rather
+        // than clobbering it into another failing state.
+        assertEquals(0, unlinkCount(site.id()), "a linked (even SSH) repository is preserved, not re-configured");
+        assertEquals(0, mock.to("/nf/sites/" + site.id()).stream()
+            .filter(r -> r.method().equals("PATCH")).count(), "no API re-link is attempted for a correctly-linked repo");
     }
 
     @Test
@@ -346,16 +353,18 @@ class ProviderAdapterTest {
     }
 
     @Test
-    void netlifyAcceptsPartialPatchAfterAVerifyingReRead() {
-        HostingSite site = createFrontend();
-        mock.markNetlifyRepoBindingStale(site.id()); // force a repair path so a PATCH is issued
+    void netlifyRelinksWrongRepoAndReconcilesPartialPatch() {
+        // A site linked to a DIFFERENT repository has no working connection to preserve,
+        // so it is the one case where DeployPilot (re)links via the API.
+        HostingSite site = netlify.createSite(nf, new CreateSiteRequest("myapp-frontend", "demo/other-repo", "main",
+            "frontend", "npm run build", "dist", null, null, null, true));
         mock.setNetlifyNextPatchOmitsRepoPath(true); // PATCH returns a partial body
         mock.clearRequests();
 
         HostingSite configured = netlify.configureSite(nf, site.id(), publicRequest("demo/sample-monorepo", "main"));
         assertEquals("demo/sample-monorepo", configured.linkedRepo(),
             "a partial PATCH response is reconciled by re-reading the site");
-        // Verified via a follow-up GET rather than trusting the partial PATCH body.
+        assertEquals(1, unlinkCount(site.id()), "a different linked repository is cleared before relinking");
         assertTrue(mock.count("GET", "/nf/sites/" + site.id()) >= 1, "a verifying re-read was performed");
     }
 
