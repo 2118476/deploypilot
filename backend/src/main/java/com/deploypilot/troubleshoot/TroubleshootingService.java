@@ -47,6 +47,7 @@ public class TroubleshootingService {
     private final ProjectRepository projectRepository;
     private final TroubleshootingContextService contextService;
     private final ProviderDiagnosticsService diagnosticsService;
+    private final LiveProbeService liveProbeService;
     private final FailureClassifier classifier;
     private final AiProvider ai;
     private final ProjectActivityService activityService;
@@ -55,6 +56,7 @@ public class TroubleshootingService {
     public TroubleshootingService(ProjectRepository projectRepository,
                                   TroubleshootingContextService contextService,
                                   ProviderDiagnosticsService diagnosticsService,
+                                  LiveProbeService liveProbeService,
                                   FailureClassifier classifier,
                                   AiProvider ai,
                                   ProjectActivityService activityService,
@@ -62,6 +64,7 @@ public class TroubleshootingService {
         this.projectRepository = projectRepository;
         this.contextService = contextService;
         this.diagnosticsService = diagnosticsService;
+        this.liveProbeService = liveProbeService;
         this.classifier = classifier;
         this.ai = ai;
         this.activityService = activityService;
@@ -79,6 +82,9 @@ public class TroubleshootingService {
 
         TroubleshootingContext ctx = contextService.build(project, userId, runId, stepId);
         diagnosticsService.collect(userId, ctx);
+        // Probe the deployment as it is RIGHT NOW (read-only, SSRF-safe), so the
+        // diagnosis distinguishes a stale recorded failure from a current fault.
+        liveProbeService.probe(ctx);
 
         // Loop detection: same code as last troubleshoot AND a remedy was attempted since.
         String currentCode = classifier.detect(ctx).name();
@@ -206,6 +212,8 @@ public class TroubleshootingService {
         if (ctx.getFailureReason() != null) sb.append("Failure reason: ").append(ctx.getFailureReason()).append('\n');
         if (!ctx.getCompletedSteps().isEmpty()) sb.append("Completed: ").append(String.join(", ", ctx.getCompletedSteps())).append('\n');
         for (String d : ctx.getProviderDiagnostics()) sb.append("Provider fact: ").append(d).append('\n');
+        for (String c : ctx.getFailedChecks()) sb.append("Verification check FAILED: ").append(c).append('\n');
+        for (String live : ctx.getLiveChecks()) sb.append("Live check (just now): ").append(live).append('\n');
         if (ctx.isRelinkReportedByUser()) sb.append("User reported: repository was relinked.\n");
         sb.append("Netlify own deploy result after relink: ").append(ctx.getManualDeployResult()).append('\n');
         if (!ctx.getAttemptedRemedies().isEmpty()) sb.append("Already attempted: ").append(String.join("; ", ctx.getAttemptedRemedies())).append('\n');

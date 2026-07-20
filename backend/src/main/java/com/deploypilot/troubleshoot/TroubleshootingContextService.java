@@ -120,7 +120,29 @@ public class TroubleshootingContextService {
             ctx.setFailedStepProvider(target.getProvider());
             ctx.setFailedAt(target.getFinishedAt() != null ? target.getFinishedAt() : target.getStartedAt());
             ctx.setFailedStepLog(buildFailedLog(target));
+            ctx.setVerificationAfterRestart(verificationAfterRestart(steps, target));
         }
+    }
+
+    /**
+     * The cold-start race: the final verification failed after starting within a few
+     * minutes of a completed backend restart/deploy — free-tier services are often
+     * still waking up, so the health probe catches them mid-restart.
+     */
+    static boolean verificationAfterRestart(List<ExecutionStep> steps, ExecutionStep failed) {
+        boolean isVerification = failed.getId() != null && failed.getId().equals("verify")
+            || (failed.getTitle() != null && failed.getTitle().toLowerCase(Locale.ROOT).contains("deployment verification"));
+        if (!isVerification || failed.getStartedAt() == null) return false;
+        for (ExecutionStep s : steps) {
+            boolean restartLike = "RESTART".equals(s.getType())
+                || (s.getId() != null && s.getId().contains("restart"));
+            if (restartLike && "SUCCEEDED".equals(s.getStatus()) && s.getFinishedAt() != null
+                && !s.getFinishedAt().isAfter(failed.getStartedAt())
+                && s.getFinishedAt().plusSeconds(300).isAfter(failed.getStartedAt())) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** Prefer the explicitly requested step; otherwise the FAILED step; otherwise the RUNNING one. */

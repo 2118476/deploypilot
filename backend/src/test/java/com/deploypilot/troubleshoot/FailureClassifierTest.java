@@ -118,6 +118,84 @@ class FailureClassifierTest {
         assertNoSecretRequests(s);
     }
 
+    // ---------- verification-step failures (no longer UNKNOWN) ----------
+
+    private TroubleshootingContext verifyFailure() {
+        TroubleshootingContext c = ctx("NONE", "verify",
+            "Verification reported UNHEALTHY. The deployment is not healthy — review and retry.", "");
+        c.getFailedChecks().add("Backend responds to HTTPS requests");
+        return c;
+    }
+
+    @Test
+    void verificationFailureAfterRestartIsClassifiedAsColdStartRace() {
+        TroubleshootingContext c = verifyFailure();
+        c.setVerificationAfterRestart(true);
+        StructuredTroubleshooting s = classifier.classify(c);
+        assertEquals(TroubleshootingErrorCode.RENDER_COLD_START.name(), s.getErrorCode());
+        assertEquals(Status.READY_TO_RETRY, s.getStatus());
+        assertTrue(s.getRetryAdvice().safeNow(), "the read-only verification retry is safe");
+        assertTrue(s.getSummary().toLowerCase().contains("restart"), "explains the restart timing race");
+    }
+
+    @Test
+    void verificationFailureAfterRestartWithLiveGreenIsConfirmed() {
+        TroubleshootingContext c = verifyFailure();
+        c.setVerificationAfterRestart(true);
+        c.setLiveFrontendOk(true);
+        c.setLiveBackendOk(true);
+        c.setLiveCorsOk(true);
+        StructuredTroubleshooting s = classifier.classify(c);
+        assertEquals(StructuredTroubleshooting.Confidence.CONFIRMED, s.getConfidence(),
+            "green live probes upgrade the diagnosis to confirmed");
+    }
+
+    @Test
+    void staleVerificationFailureWithAllLiveChecksGreenIsReadyToRetry() {
+        TroubleshootingContext c = verifyFailure();
+        c.getFailedChecks().clear(); // no specific check recorded
+        c.setLiveFrontendOk(true);
+        c.setLiveBackendOk(true);
+        c.setLiveCorsOk(true);
+        StructuredTroubleshooting s = classifier.classify(c);
+        assertEquals(TroubleshootingErrorCode.VERIFICATION_INCONCLUSIVE.name(), s.getErrorCode());
+        assertEquals(Status.READY_TO_RETRY, s.getStatus());
+        assertTrue(s.getRetryAdvice().safeNow());
+        assertTrue(s.getSummary().toLowerCase().contains("stale"), "labels the recorded failure as stale");
+    }
+
+    @Test
+    void verificationFailureWithLiveBackendDownIsBackendHealth() {
+        TroubleshootingContext c = verifyFailure();
+        c.setLiveFrontendOk(true);
+        c.setLiveBackendOk(false); // the fault is real right now
+        StructuredTroubleshooting s = classifier.classify(c);
+        assertEquals(TroubleshootingErrorCode.BACKEND_HEALTH_FAILED.name(), s.getErrorCode());
+        assertFalse(s.getRetryAdvice().safeNow(), "a live fault means retrying now would fail again");
+    }
+
+    @Test
+    void verificationFailureAfterRestartButLiveFaultDoesNotHideTheFault() {
+        TroubleshootingContext c = verifyFailure();
+        c.setVerificationAfterRestart(true);
+        c.setLiveBackendOk(false); // restart race suspected, but the backend is DOWN right now
+        StructuredTroubleshooting s = classifier.classify(c);
+        assertEquals(TroubleshootingErrorCode.BACKEND_HEALTH_FAILED.name(), s.getErrorCode(),
+            "a demonstrably current fault must win over the timing-race explanation");
+    }
+
+    @Test
+    void failedVerificationChecksAndLiveProbesBecomeVerifiedFacts() {
+        TroubleshootingContext c = verifyFailure();
+        c.getLiveChecks().add("Backend health right now: GET /api/health -> HTTP 200 in 500 ms (healthy).");
+        StructuredTroubleshooting s = classifier.classify(c);
+        assertTrue(s.getVerifiedFacts().stream().anyMatch(f ->
+                f.evidenceId().equals("verification.check.failed") && f.text().contains("Backend responds to HTTPS requests")),
+            "the failing verification check is surfaced as a fact");
+        assertTrue(s.getVerifiedFacts().stream().anyMatch(f -> f.evidenceId().equals("live.check")),
+            "live probe results are surfaced as facts");
+    }
+
     @Test
     void unknownFailureIsLabelledUnknownNotGuessed() {
         StructuredTroubleshooting s = classifier.classify(ctx("RENDER", "backend.deploy", "something odd happened", "totally unrecognised gibberish"));
