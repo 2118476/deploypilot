@@ -112,6 +112,21 @@ public class FailureClassifier {
             && (stepId.contains("env") || stepId.contains("deploy") || provider.equals("RENDER") || provider.equals("NETLIFY"))) {
             return TroubleshootingErrorCode.MISSING_SECRET;
         }
+        // The final verification step failed. Use the recorded failing checks plus
+        // the live probes to name the cause instead of reporting UNKNOWN.
+        if (isVerificationStep(stepId) || t.contains("verification reported unhealthy")) {
+            if (ctx.isVerificationAfterRestart() && !liveShowsRealFault(ctx)) {
+                return TroubleshootingErrorCode.RENDER_COLD_START;
+            }
+            if (Boolean.FALSE.equals(ctx.getLiveCorsOk()) || checksMention(ctx, "cors", "origin")) {
+                return TroubleshootingErrorCode.CORS_WRONG_ORIGIN;
+            }
+            if (Boolean.FALSE.equals(ctx.getLiveBackendOk())
+                || checksMention(ctx, "backend responds", "health endpoint")) {
+                return TroubleshootingErrorCode.BACKEND_HEALTH_FAILED;
+            }
+            return TroubleshootingErrorCode.VERIFICATION_INCONCLUSIVE;
+        }
         if ("INCONCLUSIVE".equalsIgnoreCase(ctx.getVerificationStatus())
             || "UNKNOWN".equalsIgnoreCase(ctx.getVerificationStatus())
             || containsAny(t, "false positive", "inconclusive")) {
@@ -328,6 +343,25 @@ public class FailureClassifier {
     }
 
     private void coldStart(TroubleshootingContext ctx, StructuredTroubleshooting s) {
+        if (ctx.isVerificationAfterRestart()) {
+            // The final check raced a just-restarted backend — a timing issue, not a fault.
+            s.setSummary("The final verification ran seconds after the backend was restarted. Free Render services "
+                + "take up to a minute to wake up, so the check caught the backend mid-restart. This is a timing "
+                + "issue, not a real fault" + (ctx.liveAllGreen() ? " — and right now every live check passes." : "."));
+            s.setStatus(Status.READY_TO_RETRY);
+            s.setConfidence(ctx.liveAllGreen() ? Confidence.CONFIRMED : Confidence.LIKELY);
+            s.getLikelyCauses().add(new Cause(
+                "Verification probed the backend while it was still restarting (cold start).",
+                (ctx.liveAllGreen() ? Confidence.CONFIRMED : Confidence.LIKELY).name(),
+                "A backend restart completed moments before the verification step started."));
+            s.getSteps().add(new Step(1,
+                "Click 'Retry from the failed step'. It re-runs only the final verification, which is read-only and safe.",
+                "DeployPilot", "Verification passes and the whole run turns green.", true));
+            s.setRetryAdvice(new RetryAdvice(true,
+                "Only the read-only verification re-runs; the backend has had time to finish restarting"
+                    + (ctx.liveAllGreen() ? " and all live checks are green right now." : ".")));
+            return;
+        }
         s.setSummary("The backend took too long to respond. Free Render instances 'sleep' when idle, so the first request after inactivity can be slow.");
         s.setStatus(Status.READY_TO_RETRY);
         s.setConfidence(Confidence.POSSIBLE);
@@ -411,6 +445,22 @@ public class FailureClassifier {
     }
 
     private void verificationInconclusive(TroubleshootingContext ctx, StructuredTroubleshooting s) {
+        if (ctx.liveAllGreen()) {
+            // The recorded failure is stale: everything checks out healthy right now.
+            s.setSummary("The recorded verification failure looks stale: right now the frontend loads, the backend "
+                + "health endpoint responds, and the backend accepts the frontend's connection. Re-running the "
+                + "verification should pass.");
+            s.setStatus(Status.READY_TO_RETRY);
+            s.setConfidence(Confidence.LIKELY);
+            s.getLikelyCauses().add(new Cause(
+                "The failure was recorded at a moment the deployment was briefly unavailable; it is healthy now.",
+                Confidence.LIKELY.name(), "All live checks pass at troubleshoot time."));
+            s.getSteps().add(new Step(1,
+                "Click 'Retry from the failed step'. Only the read-only verification re-runs.",
+                "DeployPilot", "Verification passes and the run turns green.", true));
+            s.setRetryAdvice(new RetryAdvice(true, "All live checks are green right now; re-running verification is safe."));
+            return;
+        }
         s.setSummary("The final verification could not clearly confirm the deployment is healthy. This does not prove it failed — the result is inconclusive.");
         s.setStatus(Status.NEEDS_EVIDENCE);
         s.setConfidence(Confidence.POSSIBLE);
@@ -470,7 +520,35 @@ public class FailureClassifier {
         for (String d : ctx.getProviderDiagnostics()) {
             s.getVerifiedFacts().add(new Fact("provider.diagnostic", d));
         }
+        // Which verification checks actually failed — the detail behind "UNHEALTHY".
+        ctx.getFailedChecks().stream().limit(5).forEach(c ->
+            s.getVerifiedFacts().add(new Fact("verification.check.failed", "Verification check failed: " + c + ".")));
+        ctx.getWarningChecks().stream().limit(3).forEach(c ->
+            s.getVerifiedFacts().add(new Fact("verification.check.warning", "Verification check warned: " + c + ".")));
+        // Live probes taken right now, so advice reflects the current state.
+        for (String live : ctx.getLiveChecks()) {
+            s.getVerifiedFacts().add(new Fact("live.check", live));
+        }
         return s;
+    }
+
+    private static boolean isVerificationStep(String stepId) {
+        return "verify".equals(stepId);
+    }
+
+    /** A live probe positively shows a real, current fault (not just a stale record). */
+    private static boolean liveShowsRealFault(TroubleshootingContext ctx) {
+        return Boolean.FALSE.equals(ctx.getLiveFrontendOk())
+            || Boolean.FALSE.equals(ctx.getLiveBackendOk())
+            || Boolean.FALSE.equals(ctx.getLiveCorsOk());
+    }
+
+    private static boolean checksMention(TroubleshootingContext ctx, String... needles) {
+        for (String check : ctx.getFailedChecks()) {
+            String c = check.toLowerCase(Locale.ROOT);
+            for (String n : needles) if (c.contains(n)) return true;
+        }
+        return false;
     }
 
     private static boolean containsAny(String haystack, String... needles) {

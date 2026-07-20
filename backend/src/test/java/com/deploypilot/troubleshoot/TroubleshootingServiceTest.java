@@ -35,6 +35,7 @@ class TroubleshootingServiceTest {
     private ProjectRepository projectRepository;
     private TroubleshootingContextService contextService;
     private ProviderDiagnosticsService diagnosticsService;
+    private LiveProbeService liveProbeService;
     private AiProvider ai;
     private ProjectActivityService activityService;
     private TroubleshootingService service;
@@ -48,10 +49,11 @@ class TroubleshootingServiceTest {
         projectRepository = mock(ProjectRepository.class);
         contextService = mock(TroubleshootingContextService.class);
         diagnosticsService = mock(ProviderDiagnosticsService.class);
+        liveProbeService = mock(LiveProbeService.class);
         ai = mock(AiProvider.class);
         activityService = mock(ProjectActivityService.class);
         service = new TroubleshootingService(projectRepository, contextService, diagnosticsService,
-            new FailureClassifier(), ai, activityService, new ObjectMapper());
+            liveProbeService, new FailureClassifier(), ai, activityService, new ObjectMapper());
 
         Project project = new Project();
         project.setId(PROJECT);
