@@ -374,6 +374,64 @@ and verification systems.
   migrations. No server-side Supabase environment variable is required. Supabase OAuth is intentionally left as a future
   upgrade. `GEMINI_API_KEY` is optional — without it the Copilot and dashboard use deterministic answers.
 
+## Evidence-Driven Copilot Troubleshooter (Stage 6)
+
+Stage 6 upgrades the Copilot into a smart, **evidence-first** deployment troubleshooter. It explains a failure to a
+beginner: what failed, what is *proven* by DeployPilot's records, what is only a *likely* explanation, what was already
+tried, the exact next steps, what evidence is still needed, what success looks like, and whether **Retry** is safe now.
+
+### Architecture: deterministic evidence first, Gemini second
+- **`TroubleshootingContextService`** builds a bounded, already-sanitised **`TroubleshootingContext`** for one failed
+  step: repository identity/visibility/branch, latest run + status, the exact failed step (id/title/provider/time),
+  completed and pending steps, the failed-step log (capped ~5,000 chars), failure reason, safe outputs (frontend/backend
+  /PR URLs), verification status + failing/warning checks, connection status, safe provider metadata, previous
+  recommendations, remedies already attempted, the known manual-deploy result, and the missing evidence. It reuses
+  `ProjectContextService` and runs `LogSanitizer` + `SecretRedactionUtil` — it **never** carries tokens, passwords,
+  service-role keys, DB credentials, Authorization headers, cookies, private env-var values or raw provider bodies.
+- **`FailureClassifier`** is deterministic **ground truth**. It maps a failure to one `TroubleshootingErrorCode`
+  (Netlify host-key clone failure, 401 auth, 403 permission/plan, build failure, publish dir, missing frontend env,
+  Render Dockerfile missing, Render build, cold start, backend health, CORS origin, duplicated `/api`, Supabase
+  connection, missing secret, inconclusive verification, version mismatch, or `UNKNOWN`) and returns a structured
+  diagnosis with verified facts, likely causes, safe numbered steps, required evidence, a retry-safety verdict and a
+  status (`DIAGNOSED` / `NEEDS_EVIDENCE` / `READY_TO_RETRY` / `UNKNOWN`).
+- **`TroubleshootingService`** is the single, unified brain. It classifies, adds read-only provider diagnostics, then —
+  only if `GEMINI_API_KEY` is set — asks Gemini for a **validated structured JSON** explanation that ranks the evidence.
+  Gemini may reword the summary and re-rank causes but **can never change the error code, status or retry-safety verdict**.
+  A missing key, malformed JSON or a timeout falls back to the deterministic diagnosis; raw malformed AI JSON is never
+  shown. The single `GeminiAiProvider` (header `x-goog-api-key`, timeouts, size caps, sanitised failures) is the only
+  Gemini client — no second key, never exposed to Vite/frontend code.
+
+### Host-key failure (the JobPilot case) — no repetitive loops
+For `Host key verification failed` / `Could not read from remote repository` / `exit status 128`, the Copilot says
+Netlify could not download the repository (**not** an application-code bug), and never auto-unlinks a valid GitHub App
+connection (preserving the fix from PR #25). It asks whether **Netlify's own** deploy succeeded after relinking and
+branches:
+- **Case A — Netlify's own deploy also fails** → GitHub authorisation is still broken; re-authorise the GitHub App,
+  retry is not safe.
+- **Case B — Netlify's own deploy succeeds but DeployPilot's failed** → authorisation is fixed; retry from the failed
+  step (and if it still fails, compare DeployPilot's trigger/selected resource).
+
+Safe events (`RELINK_REPOSITORY_RECOMMENDED`, `USER_REPORTED_RELINK_COMPLETED`, `MANUAL_DEPLOY_SUCCEEDED/FAILED/UNKNOWN`,
+`RETRY_RECOMMENDED/ATTEMPTED`, `SAME_FAILURE_REPEATED`) are recorded (no screenshots, no secrets). Once the user reports
+they relinked, the Copilot **stops repeating "relink"** and asks for Netlify's own deploy result instead; if the same
+failure repeats after a remedy, it escalates to gathering new evidence rather than giving identical instructions.
+
+### On the deployment screen
+`AutomateDeploymentPage` shows an **"Ask Copilot about this failure"** control beside a failed step (and in the failure
+banner). It auto-uses the project, run, failed step, provider, sanitised log, previous remedies and verification result —
+no copy/paste. The `TroubleshootingPanel` renders what failed, verified facts, likely cause, exact steps, information
+needed (with "what not to share" warnings), and the retry recommendation, plus quick questions ("Why did this fail?",
+"Is it safe to retry?", "Did the deployment actually succeed?", …) and buttons to report the manual-deploy result. The
+dashboard Copilot remains; both surfaces share the same backend brain and the single Gemini client.
+
+### What the Copilot can and cannot do
+- **Can:** read DeployPilot's own records and safe read-only provider metadata, classify failures deterministically,
+  explain and rank evidence, recommend exact next steps, and say whether Retry is safe.
+- **Cannot:** execute deployments, confirmations, provider/repository/database mutations, or generate a confirmation
+  nonce. All changes still go through DeployPilot's reviewed plan + confirmation flow. A failed diagnostics read becomes
+  `UNKNOWN`, never a guess; Gemini never claims to have inspected a dashboard it did not read through an authorised
+  read-only adapter, and never asks the user to paste tokens, passwords or environment-variable values.
+
 ## Roadmap
 
 1. ~~Read-only repository analysis~~ ✓
@@ -383,6 +441,9 @@ and verification systems.
    confirmation, and idempotent GitHub/Netlify/Render deployment with automatic verification (never without consent)
 5. ~~Project Copilot, intelligent dashboard & controlled Supabase automation~~ ✓ — a persistent evidence-based Copilot,
    a deterministic status dashboard, and confirmed, idempotent Supabase database preparation with migration safety
+6. ~~Evidence-driven Copilot troubleshooter~~ ✓ — a deterministic failure classifier as ground truth, a validated
+   structured Gemini explanation that can never contradict it, host-key Case A/B branching, loop prevention, read-only
+   provider diagnostics, and an "Ask Copilot about this failure" control on the deployment screen
 
 ## License
 

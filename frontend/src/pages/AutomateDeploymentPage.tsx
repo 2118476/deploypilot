@@ -9,8 +9,9 @@ import type {
 } from '@/types';
 import {
   Rocket, ShieldCheck, ShieldAlert, CheckCircle2, XCircle, Loader2, ArrowLeft, Plug, Database,
-  GitBranch, GitCommitHorizontal, Play, RefreshCw, Lock, KeyRound, Trash2, Server, Globe, Github, MinusCircle, Circle,
+  GitBranch, GitCommitHorizontal, Play, RefreshCw, Lock, KeyRound, Trash2, Server, Globe, Github, MinusCircle, Circle, Bot,
 } from 'lucide-react';
+import TroubleshootingPanel from '@/components/TroubleshootingPanel';
 
 const TYPE_BADGE: Record<string, string> = {
   READ_ONLY: 'badge-gray', CREATE: 'badge-blue', UPDATE: 'badge-amber',
@@ -502,6 +503,10 @@ function RunView({ run, projectId, onRetried, planInputs, planHash }: {
   const guidance = run.status === 'FAILED' || run.status === 'PAUSED'
     ? failureGuidance(run, steps)
     : null;
+  const firstFailed = steps.find((s) => s.status === 'FAILED');
+  // Which failed step the Copilot troubleshooter is open for (undefined = closed).
+  const [troubleshoot, setTroubleshoot] = useState<{ stepId?: string; provider?: string } | null>(null);
+  const askCopilot = (stepId?: string, provider?: string) => setTroubleshoot({ stepId, provider });
 
   return (
     <section className="space-y-4 mt-6">
@@ -539,18 +544,35 @@ function RunView({ run, projectId, onRetried, planInputs, planHash }: {
             </p>
           </div>
         )}
-        {(run.status === 'FAILED' || run.status === 'PAUSED') && planHash && (
-          <button className="btn-primary mt-3" onClick={() => retryMut.mutate()} disabled={retryMut.isPending}>
-            {retryMut.isPending ? <span className="inline-flex items-center gap-2"><Loader2 className="w-4 h-4 animate-spin" /> Retrying…</span>
-              : <span className="inline-flex items-center gap-2"><RefreshCw className="w-4 h-4" /> Retry from the failed step</span>}
-          </button>
-        )}
+        <div className="flex flex-wrap items-center gap-2 mt-3">
+          {(run.status === 'FAILED' || run.status === 'PAUSED') && planHash && (
+            <button className="btn-primary" onClick={() => retryMut.mutate()} disabled={retryMut.isPending}>
+              {retryMut.isPending ? <span className="inline-flex items-center gap-2"><Loader2 className="w-4 h-4 animate-spin" /> Retrying…</span>
+                : <span className="inline-flex items-center gap-2"><RefreshCw className="w-4 h-4" /> Retry from the failed step</span>}
+            </button>
+          )}
+          {(run.status === 'FAILED' || run.status === 'PAUSED') && (
+            <button className="btn-secondary" onClick={() => askCopilot(firstFailed?.id, firstFailed?.provider)}>
+              <span className="inline-flex items-center gap-2"><Bot className="w-4 h-4" /> Ask Copilot about this failure</span>
+            </button>
+          )}
+        </div>
         {retryMut.isError && <p className="text-sm text-red-600 dark:text-red-400 mt-2">{errorMessage(retryMut.error)}</p>}
+        {troubleshoot && (
+          <TroubleshootingPanel
+            projectId={projectId}
+            runId={run.id}
+            stepId={troubleshoot.stepId}
+            onClose={() => setTroubleshoot(null)}
+          />
+        )}
       </div>
 
       <div className="card p-4">
         <div className="space-y-3">
-          {steps.map((s) => <StepRow key={s.id} step={s} />)}
+          {steps.map((s) => (
+            <StepRow key={s.id} step={s} onAsk={s.status === 'FAILED' ? () => askCopilot(s.id, s.provider) : undefined} />
+          ))}
         </div>
       </div>
     </section>
@@ -591,7 +613,7 @@ function failureGuidance(run: AutomationRun, steps: ExecutionStep[]): {
   };
 }
 
-function StepRow({ step }: { step: ExecutionStep }) {
+function StepRow({ step, onAsk }: { step: ExecutionStep; onAsk?: () => void }) {
   const meta = STEP_META[step.status] ?? STEP_META.PENDING;
   const Icon = meta.icon;
   return (
@@ -603,6 +625,12 @@ function StepRow({ step }: { step: ExecutionStep }) {
         {step.detail && <p className="text-xs text-slate-500 break-words">{step.detail}</p>}
         {step.sanitizedLog && (
           <pre className="text-[11px] font-mono bg-slate-50 dark:bg-slate-800 rounded p-2 mt-1 overflow-x-auto whitespace-pre-wrap">{step.sanitizedLog}</pre>
+        )}
+        {onAsk && (
+          <button onClick={onAsk}
+            className="mt-1 inline-flex items-center gap-1 text-xs font-medium text-primary-600 hover:underline">
+            <Bot className="w-3 h-3" /> Ask Copilot about this failure
+          </button>
         )}
       </div>
     </div>

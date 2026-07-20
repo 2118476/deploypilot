@@ -1,5 +1,5 @@
 import axios, { AxiosError } from 'axios';
-import type { ApiResponse, AuthResponse, User, Project, ProjectSummary, DeploymentPlan, DeploymentStep, GuideCategory, Guide, CommandSnippet, ProjectEnvVar, EnvVarDefinition, GlossaryTerm, DashboardData, LoginRequest, RegisterRequest, TechnologySelection, ErrorReportRequest, RepositoryAnalysis, StackDetectionResult, BlueprintResponse, ImportRepositoryResponse, VerificationRun, AssistResponse, ProviderConnection, ProviderName, RepositorySummary, HostingSite, SecretView, DeploymentActionPlan, ConfirmationResponse, AutomationRun, SupabaseOrganization, SupabaseProject, ProjectStatus, ActivityEvent, CopilotConversation, CopilotMessage } from '@/types';
+import type { ApiResponse, AuthResponse, User, Project, ProjectSummary, DeploymentPlan, DeploymentStep, GuideCategory, Guide, CommandSnippet, ProjectEnvVar, EnvVarDefinition, GlossaryTerm, DashboardData, LoginRequest, RegisterRequest, TechnologySelection, ErrorReportRequest, RepositoryAnalysis, StackDetectionResult, BlueprintResponse, ImportRepositoryResponse, VerificationRun, AssistResponse, ProviderConnection, ProviderName, RepositorySummary, HostingSite, SecretView, DeploymentActionPlan, ConfirmationResponse, AutomationRun, SupabaseOrganization, SupabaseProject, ProjectStatus, ActivityEvent, CopilotConversation, CopilotMessage, StructuredTroubleshooting, TroubleshootRequest } from '@/types';
 
 const api = axios.create({
   baseURL: import.meta.env.VITE_API_BASE_URL || '',
@@ -156,6 +156,12 @@ export const copilotApi = {
     wrap(api.post<ApiResponse<CopilotMessage>>(`/projects/${projectId}/copilot/messages`, { message })),
   clear: (projectId: number) =>
     wrap(api.delete<ApiResponse<void>>(`/projects/${projectId}/copilot/conversations/current`)),
+  // Evidence-driven troubleshooter for a failed automation step. Deterministic
+  // ground truth, optionally explained by Gemini. Never executes anything.
+  troubleshoot: (projectId: number, body: TroubleshootRequest) =>
+    wrap(api.post<ApiResponse<StructuredTroubleshooting>>(`/projects/${projectId}/copilot/troubleshoot`, body)),
+  troubleshootEvent: (projectId: number, body: TroubleshootRequest) =>
+    wrap(api.post<ApiResponse<StructuredTroubleshooting>>(`/projects/${projectId}/copilot/troubleshoot/event`, body)),
 };
 
 export const automationApi = {
