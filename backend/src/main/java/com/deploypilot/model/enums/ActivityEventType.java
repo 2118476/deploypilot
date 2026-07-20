@@ -23,5 +23,16 @@ public enum ActivityEventType {
     AUTOMATION_SUCCEEDED,
     AUTOMATION_FAILED,
     AUTOMATION_PAUSED,
-    COPILOT_PLAN_PROPOSED
+    COPILOT_PLAN_PROPOSED,
+    // Copilot troubleshooting events — safe metadata only, never secrets or screenshots.
+    // Used to prevent repetitive troubleshooting loops and to branch host-key diagnosis.
+    COPILOT_TROUBLESHOOT_RUN,
+    RELINK_REPOSITORY_RECOMMENDED,
+    USER_REPORTED_RELINK_COMPLETED,
+    MANUAL_DEPLOY_RESULT_UNKNOWN,
+    MANUAL_DEPLOY_SUCCEEDED,
+    MANUAL_DEPLOY_FAILED,
+    RETRY_RECOMMENDED,
+    RETRY_ATTEMPTED,
+    SAME_FAILURE_REPEATED
 }

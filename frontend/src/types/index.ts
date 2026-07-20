@@ -589,6 +589,38 @@ export interface CopilotConversation {
   messages: CopilotMessage[];
 }
 
+// ----- Evidence-driven troubleshooting (Copilot) -----
+export type TroubleshootStatus = 'DIAGNOSED' | 'NEEDS_EVIDENCE' | 'READY_TO_RETRY' | 'UNKNOWN';
+export type TroubleshootConfidence = 'CONFIRMED' | 'LIKELY' | 'POSSIBLE' | 'UNKNOWN';
+
+export interface StructuredTroubleshooting {
+  errorCode: string;
+  provider?: string;
+  summary: string;
+  status: TroubleshootStatus;
+  confidence: TroubleshootConfidence;
+  verifiedFacts: { evidenceId: string; text: string }[];
+  likelyCauses: { cause: string; confidence: string; reason: string }[];
+  steps: {
+    number: number;
+    instruction: string;
+    location: string;
+    expectedResult: string;
+    requiresConfirmation: boolean;
+  }[];
+  requiredEvidence: { label: string; reason: string; secretWarning: string }[];
+  retryAdvice: { safeNow: boolean; reason: string };
+  aiExplained: boolean;
+  source: string;
+}
+
+export interface TroubleshootRequest {
+  runId?: number;
+  stepId?: string;
+  question?: string;
+  event?: string;
+}
+
 export interface DeploymentActionPlan {
   repository: string;
   branch?: string;

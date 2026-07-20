@@ -4,7 +4,10 @@ import com.deploypilot.dto.ApiResponse;
 import com.deploypilot.dto.ConversationResponse;
 import com.deploypilot.dto.CopilotMessageRequest;
 import com.deploypilot.dto.CopilotMessageResponse;
+import com.deploypilot.dto.TroubleshootRequest;
 import com.deploypilot.service.CopilotService;
+import com.deploypilot.troubleshoot.StructuredTroubleshooting;
+import com.deploypilot.troubleshoot.TroubleshootingService;
 import jakarta.validation.Valid;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -19,9 +22,11 @@ import org.springframework.web.bind.annotation.*;
 public class CopilotController {
 
     private final CopilotService copilotService;
+    private final TroubleshootingService troubleshootingService;
 
-    public CopilotController(CopilotService copilotService) {
+    public CopilotController(CopilotService copilotService, TroubleshootingService troubleshootingService) {
         this.copilotService = copilotService;
+        this.troubleshootingService = troubleshootingService;
     }
 
     @GetMapping("/conversations/current")
@@ -39,5 +44,30 @@ public class CopilotController {
     public ResponseEntity<ApiResponse<Void>> clear(@PathVariable Long projectId) {
         copilotService.clearConversation(projectId);
         return ResponseEntity.ok(ApiResponse.ok("Conversation cleared", null));
+    }
+
+    /**
+     * Evidence-driven troubleshooting for a failed deployment step. Returns a
+     * validated structured diagnosis (deterministic ground truth, optionally with a
+     * Gemini explanation). Never executes or authorises anything.
+     */
+    @PostMapping("/troubleshoot")
+    public ResponseEntity<ApiResponse<StructuredTroubleshooting>> troubleshoot(
+            @PathVariable Long projectId, @RequestBody(required = false) TroubleshootRequest request) {
+        TroubleshootRequest r = request != null ? request : new TroubleshootRequest();
+        return ResponseEntity.ok(ApiResponse.ok(
+            troubleshootingService.troubleshoot(projectId, r.getRunId(), r.getStepId(), r.getQuestion())));
+    }
+
+    /**
+     * Records a user-reported safe troubleshooting event (e.g. MANUAL_DEPLOY_SUCCEEDED)
+     * and returns the updated diagnosis. Prevents repetitive loops and drives the
+     * host-key Case A / Case B branching. Never accepts secret values.
+     */
+    @PostMapping("/troubleshoot/event")
+    public ResponseEntity<ApiResponse<StructuredTroubleshooting>> troubleshootEvent(
+            @PathVariable Long projectId, @RequestBody TroubleshootRequest request) {
+        return ResponseEntity.ok(ApiResponse.ok(
+            troubleshootingService.recordUserEvent(projectId, request.getRunId(), request.getEvent())));
     }
 }
