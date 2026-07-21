@@ -89,6 +89,8 @@ public class VerificationEngine {
         String htmlCacheControl;
         String mainBundleUrl;
         String bundle;
+        List<String> jsBodies = new ArrayList<>(); // every fetched JS asset (each capped)
+        boolean bundleTruncated;                   // any JS asset exceeded the inspection cap
         boolean bundleHasLocalhost;
         boolean bundleHasPlaceholder;
         Boolean bundleReferencesBackend; // null = could not check
@@ -141,7 +143,7 @@ public class VerificationEngine {
             int checked = 0, failed = 0;
             StringBuilder ev = new StringBuilder();
             for (String asset : assets) {
-                if (checked >= 2) break;
+                if (checked >= 3) break;
                 SafeHttpClient.SafeResponse a = http.get(asset, ctx.allowLocal());
                 checked++;
                 if (!a.ok() || a.status() >= 400) {
@@ -149,9 +151,15 @@ public class VerificationEngine {
                     ev.append(asset).append(" -> ").append(a.errorMessage() != null ? a.errorMessage() : "HTTP " + a.status()).append("; ");
                 } else {
                     ev.append(shortPath(asset)).append(" -> HTTP ").append(a.status()).append("; ");
-                    if (f.bundle == null && asset.endsWith(".js")) {
-                        f.mainBundleUrl = asset;
-                        f.bundle = a.body();
+                    if (asset.endsWith(".js") && a.body() != null) {
+                        // Content checks look across every fetched JS chunk, not just the
+                        // first — split builds put the API base in a shared chunk.
+                        f.jsBodies.add(a.body());
+                        f.bundleTruncated |= a.bodyTruncated();
+                        if (f.bundle == null) {
+                            f.mainBundleUrl = asset;
+                            f.bundle = a.body();
+                        }
                     }
                 }
             }
@@ -172,7 +180,7 @@ public class VerificationEngine {
     }
 
     private void analyzeBundle(Context ctx, VerificationResult r, FrontendFacts f) {
-        if (f.bundle == null) {
+        if (f.jsBodies.isEmpty()) {
             add(r, "frontend.bundle", "FRONTEND", "Production bundle content checks", "UNKNOWN",
                 "Main JavaScript bundle could not be downloaded for inspection", 0);
             f.bundleReferencesBackend = null;
@@ -182,21 +190,29 @@ public class VerificationEngine {
         String backendHost = ctx.backendUrl() == null || ctx.backendUrl().isBlank()
             ? null : hostOf(ctx.backendUrl());
         if (backendHost != null) {
-            f.bundleReferencesBackend = f.bundle.contains(backendHost);
+            boolean found = f.jsBodies.stream().anyMatch(b -> b.contains(backendHost));
+            // A truncated bundle where the host was not seen is NOT proof of absence:
+            // the reference may sit past the inspection cap. Unknown, never false.
+            f.bundleReferencesBackend = found ? Boolean.TRUE : (f.bundleTruncated ? null : Boolean.FALSE);
         } else {
             f.bundleReferencesBackend = null;
         }
+        // True only when the inspection was incomplete AND the host was not seen —
+        // in that case content conclusions below must not fire.
+        boolean inspectionIncomplete = backendHost != null && f.bundleTruncated
+            && !Boolean.TRUE.equals(f.bundleReferencesBackend);
 
         // Third-party browser libraries can contain dormant localhost constants.
         // Supabase Auth, for example, currently ships a localhost:9999 fallback in
         // its production bundle. Do not call the deployment broken when the same
-        // bundle demonstrably contains the intended production backend. A localhost
-        // reference remains a blocker when the expected backend is absent (or no
-        // backend was supplied), which preserves detection of real dev configuration.
-        boolean containsLocalhost = f.bundle.contains("http://localhost")
-            || f.bundle.contains("https://localhost")
-            || f.bundle.matches("(?s).*localhost:\\d{2,5}.*");
-        if (containsLocalhost && !Boolean.TRUE.equals(f.bundleReferencesBackend)) {
+        // bundle demonstrably contains the intended production backend, or when the
+        // bundle could not be fully inspected. A localhost reference remains a
+        // blocker when the expected backend is provably absent (or no backend was
+        // supplied), which preserves detection of real dev configuration.
+        boolean containsLocalhost = f.jsBodies.stream().anyMatch(b ->
+            b.contains("http://localhost") || b.contains("https://localhost")
+                || b.matches("(?s).*localhost:\\d{2,5}.*"));
+        if (containsLocalhost && !Boolean.TRUE.equals(f.bundleReferencesBackend) && !inspectionIncomplete) {
             f.bundleHasLocalhost = true;
             problems.add("bundle references localhost");
             diagnose(r, "BLOCKER", "CONFIRMED", "CONNECTION", "The production frontend calls localhost",
@@ -205,7 +221,8 @@ public class VerificationEngine {
                 "Set the API base URL environment variable on the frontend host to the backend's public URL, then rebuild and redeploy the frontend.",
                 "REBUILD");
         }
-        if (f.bundle.contains("${BACKEND_PUBLIC_URL}") || f.bundle.contains("${FRONTEND_PUBLIC_URL}")) {
+        if (f.jsBodies.stream().anyMatch(b ->
+                b.contains("${BACKEND_PUBLIC_URL}") || b.contains("${FRONTEND_PUBLIC_URL}"))) {
             f.bundleHasPlaceholder = true;
             problems.add("unreplaced blueprint placeholder present");
             diagnose(r, "BLOCKER", "CONFIRMED", "CONNECTION", "Blueprint placeholders were never replaced",
@@ -225,7 +242,7 @@ public class VerificationEngine {
                     "REBUILD");
             }
             if ("https".equalsIgnoreCase(schemeOf(ctx.frontendUrl()))
-                && backendHost != null && f.bundle.contains("http://" + backendHost)) {
+                && backendHost != null && f.jsBodies.stream().anyMatch(b -> b.contains("http://" + backendHost))) {
                 f.bundleReferencesHttpBackend = true;
                 problems.add("HTTPS frontend references the backend over plain http");
                 diagnose(r, "BLOCKER", "CONFIRMED", "CONNECTION", "HTTPS page calls an HTTP backend",
@@ -237,11 +254,14 @@ public class VerificationEngine {
         Matcher stamp = BUILD_STAMP.matcher(f.bundle);
         if (stamp.find()) f.liveCommit = stamp.group(1);
 
+        String status = !problems.isEmpty() ? "FAIL" : (inspectionIncomplete ? "UNKNOWN" : "PASS");
         add(r, "frontend.bundle", "FRONTEND", "Production bundle content checks",
-            problems.isEmpty() ? "PASS" : "FAIL",
-            problems.isEmpty()
-                ? "No localhost references or unreplaced placeholders in " + shortPath(f.mainBundleUrl)
-                : String.join("; ", problems),
+            status,
+            !problems.isEmpty() ? String.join("; ", problems)
+                : inspectionIncomplete
+                    ? "The bundle is larger than the " + (SafeHttpClient.MAX_BODY_BYTES / (1024 * 1024))
+                        + " MB inspection cap and the backend host was not seen in the inspected part — inconclusive"
+                    : "No localhost references or unreplaced placeholders in " + shortPath(f.mainBundleUrl),
             0);
     }
 

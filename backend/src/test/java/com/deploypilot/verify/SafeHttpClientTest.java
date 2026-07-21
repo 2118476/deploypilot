@@ -45,6 +45,40 @@ class SafeHttpClientTest {
     }
 
     @Test
+    void corsPreflightActuallyTransmitsTheOriginHeader() throws Exception {
+        // Regression: HttpURLConnection treats Origin as a restricted header and
+        // silently drops it, so preflights arrived Origin-less and CORS-locked
+        // backends never answered with Access-Control-Allow-Origin.
+        try (MockDeploymentServer server = new MockDeploymentServer()) {
+            server.route("/api/health", ex -> {
+                String origin = ex.getRequestHeaders().getFirst("Origin");
+                MockDeploymentServer.respond(ex, 204, null, "",
+                    origin == null ? Map.of() : Map.of("Access-Control-Allow-Origin", origin));
+            });
+            SafeHttpClient.SafeResponse res = client.corsPreflight(
+                server.baseUrl() + "/api/health", "https://app.example.com", "GET", true);
+            assertEquals(204, res.status());
+            assertEquals("https://app.example.com", res.header("access-control-allow-origin"),
+                "the Origin header must actually reach the server");
+        }
+    }
+
+    @Test
+    void headerCarryingRequestsStillNeverForwardAuth() throws Exception {
+        StringBuilder seenAuth = new StringBuilder("none");
+        try (MockDeploymentServer server = new MockDeploymentServer()) {
+            server.route("/p", ex -> {
+                if (ex.getRequestHeaders().getFirst("Authorization") != null) seenAuth.setLength(0);
+                MockDeploymentServer.respond(ex, 204, null, "");
+            });
+            client.request("OPTIONS", server.baseUrl() + "/p",
+                Map.of("Origin", "https://app.example.com", "Authorization", "Bearer secret"), true);
+            assertEquals("none", seenAuth.toString(),
+                "the java.net.http path must strip Authorization exactly like the primary path");
+        }
+    }
+
+    @Test
     void capsResponseBodySize() throws Exception {
         String huge = "x".repeat(SafeHttpClient.MAX_BODY_BYTES + 50_000);
         try (MockDeploymentServer server = new MockDeploymentServer()
