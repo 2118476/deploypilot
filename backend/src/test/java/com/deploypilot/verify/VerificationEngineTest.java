@@ -211,6 +211,85 @@ class VerificationEngineTest {
         }
     }
 
+    @Test
+    void corsPassesWhenBackendOnlyAnswersARealOriginHeader() throws Exception {
+        // Regression: HttpURLConnection silently drops the restricted Origin header,
+        // so a backend that (correctly) echoes only a RECEIVED Origin never approved
+        // the preflight and every locked-down deployment was reported UNHEALTHY.
+        try (MockDeploymentServer fe = new MockDeploymentServer(); MockDeploymentServer be = new MockDeploymentServer()) {
+            fe.route("/", 200, "text/html", "<html>App</html>");
+            be.route("/", 200, "text/plain", "root");
+            be.route("/api/health", ex -> {
+                if (ex.getRequestMethod().equals("OPTIONS")) {
+                    String origin = ex.getRequestHeaders().getFirst("Origin");
+                    // Express `cors` behaviour: no Origin header -> no ACAO answer.
+                    MockDeploymentServer.respond(ex, 204, null, "",
+                        origin == null ? Map.of() : Map.of("Access-Control-Allow-Origin", origin));
+                } else {
+                    MockDeploymentServer.respond(ex, 200, "application/json", "{\"status\":\"UP\"}");
+                }
+            });
+            VerificationEngine.Outcome out = engine.verify(ctx(fe.baseUrl(), be.baseUrl(), "/api/health", null, false));
+            assertEquals("ACCEPTED", out.result().getCorsResult(),
+                "the preflight must actually transmit the Origin header");
+        }
+    }
+
+    // ---- bundle inspection: caps and code-split builds ----
+
+    /** A health route that answers GET normally and echoes the Origin on preflight. */
+    private MockDeploymentServer.Handler corsAwareHealth() {
+        return ex -> {
+            if (ex.getRequestMethod().equals("OPTIONS")) {
+                String origin = ex.getRequestHeaders().getFirst("Origin");
+                MockDeploymentServer.respond(ex, 204, null, "",
+                    origin == null ? Map.of() : Map.of("Access-Control-Allow-Origin", origin));
+            } else {
+                MockDeploymentServer.respond(ex, 200, "application/json", "{\"status\":\"UP\"}");
+            }
+        };
+    }
+
+    @Test
+    void bundlePassesWhenBackendHostAppearsLateInALargeBundle() throws Exception {
+        try (MockDeploymentServer fe = new MockDeploymentServer(); MockDeploymentServer be = new MockDeploymentServer()) {
+            be.route("/", 200, "text/plain", "root");
+            be.route("/api/health", corsAwareHealth());
+            String backendHost = be.baseUrl().replace("http://", "");
+            // A realistic split-build bundle: a dormant library localhost constant
+            // early, the real API base far beyond the old 512 KB cap.
+            String bundle = "const supabaseFallback='http://localhost:9999';" + "x".repeat(700 * 1024)
+                + ";const api='" + be.baseUrl() + "/api';fetch(api)";
+            fe.route("/", 200, "text/html", "<html><script src=\"/app.js\"></script></html>");
+            fe.route("/app.js", 200, "application/javascript", bundle);
+            VerificationEngine.Outcome out = engine.verify(ctx(fe.baseUrl(), be.baseUrl(), "/api/health", null, false));
+            assertEquals("PASS", check(out.result(), "frontend.bundle").getStatus(),
+                "a backend reference past 512 KB must still be found");
+            assertFalse(hasDiagnosis(out.result(), "calls localhost"),
+                "the dormant localhost constant is tolerated when the backend is referenced");
+            assertNotEquals(VerificationStatus.UNHEALTHY, out.overallStatus());
+        }
+    }
+
+    @Test
+    void bundleBeyondInspectionCapIsInconclusiveNotBroken() throws Exception {
+        try (MockDeploymentServer fe = new MockDeploymentServer(); MockDeploymentServer be = new MockDeploymentServer()) {
+            be.route("/", 200, "text/plain", "root");
+            be.route("/api/health", corsAwareHealth());
+            // Backend reference beyond even the new cap: absence is NOT proven.
+            String bundle = "const dev='http://localhost:8080';" + "x".repeat(SafeHttpClient.MAX_BODY_BYTES + 10_000)
+                + ";const api='" + be.baseUrl() + "/api'";
+            fe.route("/", 200, "text/html", "<html><script src=\"/app.js\"></script></html>");
+            fe.route("/app.js", 200, "application/javascript", bundle);
+            VerificationEngine.Outcome out = engine.verify(ctx(fe.baseUrl(), be.baseUrl(), "/api/health", null, false));
+            assertEquals("UNKNOWN", check(out.result(), "frontend.bundle").getStatus(),
+                "a truncated inspection must be inconclusive, not a failure");
+            assertFalse(hasDiagnosis(out.result(), "calls localhost"),
+                "no localhost blocker when the bundle could not be fully inspected");
+            assertNotEquals(VerificationStatus.UNHEALTHY, out.overallStatus());
+        }
+    }
+
     // ---- version states ----
 
     @Test
